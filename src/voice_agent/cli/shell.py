@@ -334,6 +334,9 @@ class MinionsShell:
         self._console.print(Text(f"  ┊ [语音] 结束 ({dur}ms{tag}), 识别中...", style="cyan"))
 
     def _render_asr_final(self, event: dict) -> None:
+        # CLI 手动输入已经通过 user.text 显示，不再重复
+        if event.get("source") == "cli":
+            return
         text = event.get("text", "")
         self._console.print(Text(f"  ┊ [ASR] {text}", style="bold cyan"))
 

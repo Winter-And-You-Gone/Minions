@@ -25,6 +25,8 @@ python -m voice_agent.main --asr mock
 | `--asr sherpa-onnx` | 真实语音识别（需安装可选依赖） |
 | `--cli` | CLI 交互模式（MinionsShell，含 VU 监测） |
 | `--mic-test` | 麦克风测试模式 |
+| `--asr-test sherpa-onnx` | 只测试 ASR，不调用 LLM/Gate |
+| `--vad-threshold <float>` | 覆盖 VAD RMS 阈值 |
 | `--list-devices` | 列出所有音频设备 |
 | `--device <id>` | 指定麦克风设备 ID |
 
@@ -64,6 +66,50 @@ asr:
 
 ```bash
 python -m voice_agent.main --asr sherpa-onnx
+```
+
+## 真实 ASR 调试
+
+安装 ASR 可选依赖：
+
+```bash
+pip install -e ".[asr]"
+```
+
+先测试麦克风：
+
+```bash
+python -m voice_agent.main --mic-test
+```
+
+只测试 ASR，不调用 LLM：
+
+```bash
+python -m voice_agent.main --asr-test sherpa-onnx
+```
+
+如果环境噪声较大，可以调高 VAD 阈值：
+
+```bash
+python -m voice_agent.main --asr-test sherpa-onnx --vad-threshold 0.012
+```
+
+如果说话检测不到，可以调低阈值：
+
+```bash
+python -m voice_agent.main --asr-test sherpa-onnx --vad-threshold 0.006
+```
+
+完整语音 Agent：
+
+```bash
+python -m voice_agent.main --asr sherpa-onnx
+```
+
+CLI + 语音：
+
+```bash
+python -m voice_agent.main --cli --asr sherpa-onnx
 ```
 
 ## CLI 交互模式

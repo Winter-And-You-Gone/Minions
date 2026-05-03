@@ -62,8 +62,23 @@ def build_asr(engine_name: str, event_bus: EventBus, config: dict) -> MockASR | 
     raise ValueError(f"不支持的 ASR 引擎: {engine_name}")
 
 
-async def run(config_path: str, asr_override: str | None = None) -> None:
+def apply_runtime_overrides(config: dict, vad_threshold: float | None = None) -> dict:
+    """应用命令行运行时覆盖配置。"""
+    if vad_threshold is not None:
+        config.setdefault("asr", {})
+        config["asr"].setdefault("sherpa_onnx", {})
+        config["asr"]["sherpa_onnx"].setdefault("vad", {})
+        config["asr"]["sherpa_onnx"]["vad"]["rms_threshold"] = vad_threshold
+    return config
+
+
+async def run(
+    config_path: str,
+    asr_override: str | None = None,
+    vad_threshold: float | None = None,
+) -> None:
     config = get_config(config_path)
+    config = apply_runtime_overrides(config, vad_threshold)
     debug = config.get("app", {}).get("debug", False)
     logger = setup_logging(debug)
 
@@ -200,9 +215,14 @@ async def run_mic_test(config_path: str, device_override: int | str | None = Non
         logger.info("[MicTest] 已退出")
 
 
-async def run_cli(config_path: str, asr_override: str | None = None) -> None:
+async def run_cli(
+    config_path: str,
+    asr_override: str | None = None,
+    vad_threshold: float | None = None,
+) -> None:
     """CLI 交互模式：启动 AgentCore 管道 + 交互式外壳，可选 ASR 识别。"""
     config = get_config(config_path)
+    config = apply_runtime_overrides(config, vad_threshold)
     debug = config.get("app", {}).get("debug", False)
     logger = setup_logging(debug)
 
@@ -274,6 +294,38 @@ async def run_cli(config_path: str, asr_override: str | None = None) -> None:
         logger.info("[系统] voice-agent CLI 已退出")
 
 
+async def run_asr_test(
+    config_path: str,
+    engine_name: str,
+    vad_threshold: float | None = None,
+) -> None:
+    """ASR 测试模式：只运行 ASR，不进入 AgentCore/LLM。"""
+    config = get_config(config_path)
+    config = apply_runtime_overrides(config, vad_threshold)
+
+    debug = config.get("app", {}).get("debug", False)
+    logger = setup_logging(debug)
+
+    bus = EventBus()
+    bus.subscribe(handle_console_output)
+
+    asr_engine = build_asr(engine_name, bus, config)
+
+    logger.info("========================================")
+    logger.info("  ASR 测试模式 — %s", engine_name)
+    logger.info("  只测试语音识别，不调用 LLM/Gate")
+    logger.info("  按 Ctrl+C 退出")
+    logger.info("========================================")
+
+    try:
+        await asr_engine.start()
+    except KeyboardInterrupt:
+        logger.info("[ASRTest] 用户中断")
+    finally:
+        await asr_engine.stop()
+        logger.info("[ASRTest] 已退出")
+
+
 def main() -> None:
     # Windows 控制台 UTF-8 支持
     if sys.platform == "win32":
@@ -289,6 +341,18 @@ def main() -> None:
     parser.add_argument("--device", default=None, help="麦克风设备 ID 或名称子串 (仅 --mic-test 时有效)")
     parser.add_argument("--cli", action="store_true", help="CLI 交互模式（可选 --asr 启用语音）")
     parser.add_argument("--list-devices", action="store_true", help="列出所有音频设备")
+    parser.add_argument(
+        "--vad-threshold",
+        type=float,
+        default=None,
+        help="覆盖 VAD RMS 阈值，例如 0.006",
+    )
+    parser.add_argument(
+        "--asr-test",
+        choices=["sherpa-onnx"],
+        default=None,
+        help="只测试真实 ASR，不调用 LLM/Gate，例如 --asr-test sherpa-onnx",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -299,10 +363,12 @@ def main() -> None:
         if args.mic_test:
             device = int(args.device) if args.device and args.device.isdigit() else args.device
             asyncio.run(run_mic_test(args.config, device))
+        elif args.asr_test:
+            asyncio.run(run_asr_test(args.config, args.asr_test, args.vad_threshold))
         elif args.cli:
-            asyncio.run(run_cli(args.config, args.asr))
+            asyncio.run(run_cli(args.config, args.asr, args.vad_threshold))
         else:
-            asyncio.run(run(args.config, args.asr))
+            asyncio.run(run(args.config, args.asr, args.vad_threshold))
     except KeyboardInterrupt:
         pass
     except FileNotFoundError as e:

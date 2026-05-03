@@ -1,9 +1,15 @@
 """控制台输出：使用 rich 彩色显示各类事件。"""
 
+import time
+
 from rich.console import Console
 from rich.text import Text
 
 _CONSOLE = Console()
+
+# audio.level 打印限频
+_LAST_AUDIO_LEVEL_PRINT_AT = 0.0
+_AUDIO_LEVEL_PRINT_INTERVAL = 1.0
 
 STYLE_MAP = {
     "asr.partial": "dim",
@@ -70,7 +76,28 @@ async def handle_console_output(event: dict) -> None:
         _CONSOLE.print(Text("[系统] 已恢复", style="bold magenta"))
 
     elif etype == "audio.level":
+        global _LAST_AUDIO_LEVEL_PRINT_AT
+        now = time.time()
+        if now - _LAST_AUDIO_LEVEL_PRINT_AT < _AUDIO_LEVEL_PRINT_INTERVAL:
+            return
+        _LAST_AUDIO_LEVEL_PRINT_AT = now
+
         rms = event.get("rms", 0.0)
         bar_len = min(int(rms * 200), 40)
         bar = "#" * bar_len + "." * (40 - bar_len)
         _CONSOLE.print(Text(f"  [Audio] rms={rms:.4f}  |{bar}|", style="dim"))
+
+    elif etype == "asr.status":
+        status = event.get("status", "")
+        msg = event.get("message", "")
+        style_map = {
+            "error": "bold red",
+            "model_loaded": "green",
+            "listening": "green",
+            "recognized": "green",
+            "loading_model": "cyan",
+            "recognizing": "cyan",
+            "starting_microphone": "cyan",
+        }
+        style = style_map.get(status, "dim cyan")
+        _CONSOLE.print(Text(f"  [ASR] {msg}", style=style))

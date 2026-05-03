@@ -39,6 +39,7 @@ class SherpaOnnxASR:
         self._recognizer = None
         self._mic: Microphone | None = None
         self._segmenter: SpeechSegmenter | None = None
+        self._result_config = config.get("result", {})
 
     async def start(self) -> None:
         # 1) 检查依赖安装
@@ -61,9 +62,24 @@ class SherpaOnnxASR:
         chunk_ms = self._config.get("chunk_ms", 100)
 
         # 3) 创建 recognizer
+        await self._bus.publish({
+            "type": "asr.status",
+            "status": "loading_model",
+            "message": "正在加载 sherpa-onnx 模型...",
+        })
         self._recognizer = self._create_recognizer()
+        await self._bus.publish({
+            "type": "asr.status",
+            "status": "model_loaded",
+            "message": "语音识别模型加载完成",
+        })
 
         # 4) 创建麦克风
+        await self._bus.publish({
+            "type": "asr.status",
+            "status": "starting_microphone",
+            "message": "正在启动麦克风...",
+        })
         self._mic = Microphone(
             sample_rate=sample_rate,
             channels=self._config.get("channels", 1),
@@ -84,10 +100,32 @@ class SherpaOnnxASR:
         )
         self._segmenter = SpeechSegmenter(segmenter_cfg)
 
+        self._logger.info(
+            "[SherpaOnnxASR] VAD 参数: threshold=%.4f min=%dms silence=%dms max=%dms pre_roll=%dms",
+            segmenter_cfg.rms_threshold,
+            segmenter_cfg.min_speech_ms,
+            segmenter_cfg.silence_timeout_ms,
+            segmenter_cfg.max_speech_ms,
+            segmenter_cfg.pre_roll_ms,
+        )
+        await self._bus.publish({
+            "type": "asr.status",
+            "status": "vad_config",
+            "message": (
+                f"VAD: threshold={segmenter_cfg.rms_threshold:.4f}, "
+                f"min={segmenter_cfg.min_speech_ms}ms, "
+                f"silence={segmenter_cfg.silence_timeout_ms}ms"
+            ),
+        })
+
         # 6) 启动主循环
         self._running = True
+        await self._bus.publish({
+            "type": "asr.status",
+            "status": "listening",
+            "message": "正在监听麦克风，请说话",
+        })
         self._logger.info("[SherpaOnnxASR] 启动成功，等待语音输入...")
-        print("  [ASR] 已启动，请说话...", flush=True)
 
         try:
             await self._mic.start()
@@ -227,6 +265,21 @@ class SherpaOnnxASR:
         )
         return recognizer
 
+    def _should_publish_text(self, text: str) -> bool:
+        """根据配置过滤识别结果。"""
+        min_text_length = int(self._result_config.get("min_text_length", 1))
+        ignore_empty = bool(self._result_config.get("ignore_empty", True))
+
+        normalized = text.strip()
+
+        if ignore_empty and not normalized:
+            return False
+
+        if len(normalized) < min_text_length:
+            return False
+
+        return True
+
     async def _run_loop(self, sample_rate: int) -> None:
         """主循环: 读麦克风 → 分段 → 识别。"""
         loop = asyncio.get_running_loop()
@@ -256,23 +309,38 @@ class SherpaOnnxASR:
 
                 # 在 executor 中运行识别（CPU 密集）
                 try:
+                    await self._bus.publish({
+                        "type": "asr.status",
+                        "status": "recognizing",
+                        "message": "正在识别语音...",
+                    })
                     text = await loop.run_in_executor(
                         None, self._recognize_audio, segment, sample_rate
                     )
                 except Exception as e:
                     self._logger.error("[SherpaOnnxASR] 识别错误: %s", e)
+                    await self._bus.publish({
+                        "type": "asr.status",
+                        "status": "error",
+                        "message": str(e),
+                    })
                     await self._bus.publish({"type": "asr.error", "message": str(e)})
                     continue
 
-                if text:
+                if self._should_publish_text(text):
+                    await self._bus.publish({
+                        "type": "asr.status",
+                        "status": "recognized",
+                        "message": "语音识别完成",
+                    })
                     await self._bus.publish({
                         "type": "asr.final",
-                        "text": text,
+                        "text": text.strip(),
                         "confidence": 1.0,
                         "engine": "sherpa-onnx",
                     })
                 else:
-                    self._logger.debug("[SherpaOnnxASR] 识别结果为空，跳过")
+                    self._logger.debug("[SherpaOnnxASR] 识别结果被过滤: %r", text)
 
     def _recognize_audio(self, samples: np.ndarray, sample_rate: int) -> str:
         """在 executor 中执行离线识别。"""
