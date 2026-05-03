@@ -20,6 +20,7 @@ class WebSocketServer:
         self._logger = get_logger()
         self._event_queue: asyncio.Queue = asyncio.Queue()
         self._broadcast_task: asyncio.Task | None = None
+        self._stopped: bool = False
 
     async def start(self) -> None:
         self._server = await serve(
@@ -31,6 +32,9 @@ class WebSocketServer:
         self._logger.info("[WebSocket] 已启动 ws://%s:%s", self._host, self._port)
 
     async def stop(self) -> None:
+        if self._stopped:
+            return
+        self._stopped = True
         if self._broadcast_task:
             self._broadcast_task.cancel()
             self._broadcast_task = None

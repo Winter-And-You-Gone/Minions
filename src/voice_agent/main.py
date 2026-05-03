@@ -114,7 +114,8 @@ async def run(config_path: str, asr_override: str | None = None) -> None:
     bus.subscribe(on_command)
 
     logger.info("[系统] ASR 引擎: %s", asr_engine_name)
-    logger.info("[系统] LLM: %s (enabled=%s)", config.get("llm", {}).get("model", "mock"), llm.is_available)
+    llm_mode = "真实调用" if llm.is_available else "mock 模式"
+    logger.info("[系统] LLM: %s（%s）", config.get("llm", {}).get("model", "mock"), llm_mode)
     logger.info("[系统] 输入文本开始交互...")
 
     try:
