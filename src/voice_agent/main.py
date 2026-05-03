@@ -17,6 +17,7 @@ from voice_agent.asr.sherpa_onnx_asr import SherpaOnnxASR
 from voice_agent.output.console_output import handle_console_output
 from voice_agent.output.websocket_server import WebSocketServer
 from voice_agent.audio.microphone import Microphone, calculate_rms
+from voice_agent.cli.shell import MinionsShell
 
 
 def build_gate(config: dict) -> InterventionGate:
@@ -191,12 +192,64 @@ async def run_mic_test(config_path: str, device_override: int | str | None = Non
         logger.info("[MicTest] 已退出")
 
 
+async def run_cli(config_path: str) -> None:
+    """CLI 交互模式：启动 AgentCore 管道 + 交互式外壳，不使用 ASR/麦克风。"""
+    config = get_config(config_path)
+    debug = config.get("app", {}).get("debug", False)
+    logger = setup_logging(debug)
+
+    # 初始化各组件
+    bus = EventBus()
+    state = ConversationState(
+        _cooldown_seconds=config.get("intervention", {}).get("cooldown_seconds", 5),
+        _conversation_timeout_seconds=config.get("intervention", {}).get("conversation_timeout_seconds", 60),
+    )
+    gate = build_gate(config)
+    llm = build_llm(config)
+    agent = AgentCore(bus, state, gate, llm)
+
+    # 桥接 asr.final → AgentCore
+    async def on_asr_final(event: dict) -> None:
+        if event.get("type") == "asr.final":
+            await agent.handle_final_text(
+                event.get("text", ""),
+                event.get("confidence", 1.0),
+            )
+
+    # 桥接命令
+    async def on_command(event: dict) -> None:
+        etype = event.get("type", "")
+        if etype == "command.pause":
+            await agent.handle_pause()
+        elif etype == "command.resume":
+            await agent.handle_resume()
+        elif etype == "command.exit":
+            await llm.close()
+
+    bus.subscribe(on_asr_final)
+    bus.subscribe(on_command)
+
+    # 交互式外壳
+    shell = MinionsShell(bus, agent, state, llm)
+    shell.subscribe()
+
+    llm_mode = "真实调用" if llm.is_available else "mock 模式"
+    logger.info("[系统] LLM: %s（%s）", config.get("llm", {}).get("model", "mock"), llm_mode)
+
+    try:
+        await shell.run()
+    finally:
+        await llm.close()
+        logger.info("[系统] voice-agent CLI 已退出")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="voice-agent: 常驻语音 Agent")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径 (默认: config.yaml)")
     parser.add_argument("--asr", default=None, help="ASR 引擎覆盖 (mock / sherpa-onnx)")
     parser.add_argument("--mic-test", action="store_true", help="麦克风测试模式（不启动 ASR/LLM）")
     parser.add_argument("--device", default=None, help="麦克风设备 ID 或名称子串 (仅 --mic-test 时有效)")
+    parser.add_argument("--cli", action="store_true", help="CLI 交互模式（不使用 ASR/麦克风）")
     parser.add_argument("--list-devices", action="store_true", help="列出所有音频设备")
     args = parser.parse_args()
 
@@ -208,6 +261,8 @@ def main() -> None:
         if args.mic_test:
             device = int(args.device) if args.device and args.device.isdigit() else args.device
             asyncio.run(run_mic_test(args.config, device))
+        elif args.cli:
+            asyncio.run(run_cli(args.config))
         else:
             asyncio.run(run(args.config, args.asr))
     except KeyboardInterrupt:

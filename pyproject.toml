@@ -14,6 +14,7 @@ dependencies = [
     "httpx",
     "websockets",
     "rich",
+    "prompt_toolkit",
 ]
 
 [tool.setuptools]
