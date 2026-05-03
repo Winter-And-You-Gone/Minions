@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggestion, Suggestion
+from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
@@ -50,6 +50,24 @@ def _resolve_device(device_arg: str) -> int | str | None:
     if isinstance(device_arg, str) and device_arg.isdigit():
         return int(device_arg)
     return device_arg
+
+
+def _get_mic_info(device_id: int | str | None = None) -> dict:
+    """查询麦克风设备信息，返回带有效性标记的字典。"""
+    import sounddevice as sd
+
+    did = device_id if device_id is not None else sd.default.device[0]
+    try:
+        info = sd.query_devices(did)
+        return {
+            "id": did,
+            "name": info["name"],
+            "sr": info["default_samplerate"],
+            "channels": info["max_input_channels"],
+            "valid": info["max_input_channels"] > 0,
+        }
+    except Exception:
+        return {"id": did, "name": str(did), "sr": 0, "channels": 0, "valid": False}
 
 
 class MinionsShell:
@@ -238,7 +256,7 @@ class MinionsShell:
 
     # ---- 命令自动猜想 ----
 
-    class _CommandAutoSuggest(AutoSuggestion):
+    class _CommandAutoSuggest(AutoSuggest):
         """自动猜想命令：输入 /h 淡色显示 /help，右键补全。"""
 
         def __init__(self, commands: dict[str, tuple[str, str]]) -> None:
@@ -332,10 +350,13 @@ class MinionsShell:
         self._console.print(Text(f"  cooldown_until: {self._state.cooldown_until:.1f}", style="dim"))
 
     async def _cmd_status(self) -> None:
+        mic = _get_mic_info(self._mic_device)
+        mic_tag = f"🎤 {mic['name']}" if mic["valid"] else f"⚠️  {mic['name']}（无输入通道）"
+
         self._console.print(Text(f"  模式: {'暂停' if self._paused else '运行'}", style="cyan"))
         self._console.print(Text(f"  LLM 可用: {self._llm.is_available}", style="cyan"))
         self._console.print(Text(f"  状态: {self._state.mode}", style="cyan"))
-        self._console.print(Text(f"  麦克风: {self._mic_device or '默认'}", style="cyan"))
+        self._console.print(Text(f"  麦克风: {mic_tag}", style="cyan"))
 
     async def _cmd_mic(self, *args: str) -> None:
         """处理 /mic 子命令。"""
@@ -350,17 +371,12 @@ class MinionsShell:
             self._console.print(Text(f"  已选择麦克风设备: {self._mic_device}", style="green"))
 
         elif sub == "info":
-            import sounddevice as sd
-
-            default = sd.default.device[0]
-            cur = self._mic_device if self._mic_device is not None else default
-            try:
-                info = sd.query_devices(cur)
-                self._console.print(Text(f"  当前设备 [{cur}]: {info['name']}", style="cyan"))
-                self._console.print(Text(f"  采样率: {info['default_samplerate']:.0f} Hz", style="dim"))
-                self._console.print(Text(f"  输入通道: {info['max_input_channels']}", style="dim"))
-            except Exception as e:
-                self._console.print(Text(f"  设备查询失败: {e}", style="red"))
+            mic = _get_mic_info(self._mic_device)
+            valid_text = "✅ 有效（输入设备）" if mic["valid"] else "❌ 无效（无输入通道）"
+            self._console.print(Text(f"  设备: [{mic['id']}] {mic['name']}", style="bold cyan"))
+            self._console.print(Text(f"  状态: {valid_text}", style="green" if mic["valid"] else "red"))
+            self._console.print(Text(f"  采样率: {mic['sr']:.0f} Hz", style="dim"))
+            self._console.print(Text(f"  输入通道: {mic['channels']}", style="dim"))
 
         else:
             table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
@@ -381,11 +397,18 @@ class MinionsShell:
     # ---- 欢迎信息 ----
 
     def _print_welcome(self) -> None:
+        import sounddevice as sd
+
+        # 检测默认麦克风
+        mic = _get_mic_info()
+        mic_status = f"🎤 {mic['name']}" if mic["valid"] else "⚠️  未检测到有效麦克风"
+
         self._console.print()
         header = Panel(
             Text("\n".join([
                 "Minions — 常驻语音 Agent  CLI",
                 "",
+                f"  {mic_status}",
                 "直接输入文字与 AI 对话，或输入 /help 查看命令",
             ])),
             title="[bold cyan]Minions[/]",
