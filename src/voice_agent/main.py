@@ -16,6 +16,7 @@ from voice_agent.asr.mock_asr import MockASR
 from voice_agent.asr.sherpa_onnx_asr import SherpaOnnxASR
 from voice_agent.output.console_output import handle_console_output
 from voice_agent.output.websocket_server import WebSocketServer
+from voice_agent.audio.microphone import Microphone, calculate_rms
 
 
 def build_gate(config: dict) -> InterventionGate:
@@ -131,14 +132,55 @@ async def run(config_path: str, asr_override: str | None = None) -> None:
         logger.info("[系统] voice-agent 已退出")
 
 
+async def run_mic_test(config_path: str) -> None:
+    """麦克风测试模式：采集音频 → 计算 RMS → 显示音量。"""
+    config = get_config(config_path)
+    debug = config.get("app", {}).get("debug", False)
+    logger = setup_logging(debug)
+
+    ac = config.get("audio", {})
+    mic = Microphone(
+        sample_rate=ac.get("sample_rate", 16000),
+        channels=ac.get("channels", 1),
+        chunk_ms=ac.get("chunk_ms", 100),
+        device=ac.get("device"),
+    )
+
+    bus = EventBus()
+    bus.subscribe(handle_console_output)
+
+    logger.info("========================================")
+    logger.info("  麦克风测试模式 — 按 Ctrl+C 退出")
+    logger.info("========================================")
+
+    try:
+        await mic.start()
+        logger.info("[MicTest] 开始采集，每 %dms 输出一次音量...", mic.chunk_ms)
+        while True:
+            chunk = await mic.read_chunk()
+            rms = calculate_rms(chunk)
+            await bus.publish({"type": "audio.level", "rms": rms})
+    except KeyboardInterrupt:
+        logger.info("[MicTest] 用户中断")
+    except Exception as e:
+        logger.error("[MicTest] 错误: %s", e)
+    finally:
+        await mic.stop()
+        logger.info("[MicTest] 已退出")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="voice-agent: 常驻语音 Agent")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径 (默认: config.yaml)")
     parser.add_argument("--asr", default=None, help="ASR 引擎覆盖 (mock / sherpa-onnx)")
+    parser.add_argument("--mic-test", action="store_true", help="麦克风测试模式（不启动 ASR/LLM）")
     args = parser.parse_args()
 
     try:
-        asyncio.run(run(args.config, args.asr))
+        if args.mic_test:
+            asyncio.run(run_mic_test(args.config))
+        else:
+            asyncio.run(run(args.config, args.asr))
     except KeyboardInterrupt:
         pass
     except FileNotFoundError as e:
