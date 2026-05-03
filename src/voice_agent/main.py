@@ -132,18 +132,40 @@ async def run(config_path: str, asr_override: str | None = None) -> None:
         logger.info("[系统] voice-agent 已退出")
 
 
-async def run_mic_test(config_path: str) -> None:
+def list_devices() -> None:
+    """列出所有 audio 设备，标记输入设备。"""
+    import sounddevice as sd
+
+    print("=" * 72)
+    print("  可用音频设备（输入设备标记为 🎤 ）")
+    print("=" * 72)
+    for i, dev in enumerate(sd.query_devices()):
+        name = dev["name"]
+        inputs = dev["max_input_channels"]
+        outputs = dev["max_output_channels"]
+        sr = dev["default_samplerate"]
+        marker = "🎤" if inputs > 0 else "  "
+        io = f"in={inputs:<2d} out={outputs:<2d}"
+        print(f"  {marker} [{i:2d}] {name:<40s} {io}  {sr:6.0f} Hz")
+    print("=" * 72)
+    print("使用: python -m voice_agent.main --mic-test --device <id>")
+
+
+async def run_mic_test(config_path: str, device_override: int | str | None = None) -> None:
     """麦克风测试模式：采集音频 → 计算 RMS → 显示音量。"""
+    import sounddevice as sd
+
     config = get_config(config_path)
     debug = config.get("app", {}).get("debug", False)
     logger = setup_logging(debug)
 
     ac = config.get("audio", {})
+    device = device_override if device_override is not None else ac.get("device")
     mic = Microphone(
         sample_rate=ac.get("sample_rate", 16000),
         channels=ac.get("channels", 1),
         chunk_ms=ac.get("chunk_ms", 100),
-        device=ac.get("device"),
+        device=device,
     )
 
     bus = EventBus()
@@ -174,11 +196,18 @@ def main() -> None:
     parser.add_argument("--config", default="config.yaml", help="配置文件路径 (默认: config.yaml)")
     parser.add_argument("--asr", default=None, help="ASR 引擎覆盖 (mock / sherpa-onnx)")
     parser.add_argument("--mic-test", action="store_true", help="麦克风测试模式（不启动 ASR/LLM）")
+    parser.add_argument("--device", default=None, help="麦克风设备 ID 或名称子串 (仅 --mic-test 时有效)")
+    parser.add_argument("--list-devices", action="store_true", help="列出所有音频设备")
     args = parser.parse_args()
+
+    if args.list_devices:
+        list_devices()
+        return
 
     try:
         if args.mic_test:
-            asyncio.run(run_mic_test(args.config))
+            device = int(args.device) if args.device and args.device.isdigit() else args.device
+            asyncio.run(run_mic_test(args.config, device))
         else:
             asyncio.run(run(args.config, args.asr))
     except KeyboardInterrupt:
