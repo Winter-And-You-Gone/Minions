@@ -21,7 +21,7 @@ from voice_agent.cli.shell import (
     _probe_device_rms,
     _resolve_device,
 )
-from voice_agent.cli.ui_state import GateView, UIState
+from voice_agent.cli.ui_state import GateView, LLMView, UIState
 from voice_agent.core.agent_core import AgentCore
 from voice_agent.core.conversation_state import ConversationState
 from voice_agent.core.llm_client import LLMClient
@@ -60,8 +60,10 @@ class DynamicMinionsShell:
 
         # 状态
         self.ui = UIState(
-            llm_model=llm.model if llm.is_available and llm.model else "mock",
-            llm_available=llm.is_available,
+            llm=LLMView(
+                model=llm.model if llm.is_available and llm.model else "mock",
+                available=llm.is_available,
+            ),
         )
         self._mic_device: int | str | None = None
         self._mic_monitoring = False
@@ -146,21 +148,21 @@ class DynamicMinionsShell:
     def _build_key_bindings(self) -> None:
         from prompt_toolkit.key_binding import KeyBindings
 
-        self._input_kb = KeyBindings()
+        self._kb = KeyBindings()
 
-        @self._input_kb.add(Keys.Enter)
+        @self._kb.add(Keys.Enter)
         def _accept(event: object) -> None:
             self._accept_buffer()
 
-        @self._input_kb.add(Keys.ControlC)
+        @self._kb.add(Keys.ControlC)
         def _exit(event: object) -> None:
             asyncio.create_task(self._cmd_exit())
 
-        @self._input_kb.add(Keys.Up)
+        @self._kb.add(Keys.Up)
         def _hist_back(event: object) -> None:
             self._input_buffer.history_backward()
 
-        @self._input_kb.add(Keys.Down)
+        @self._kb.add(Keys.Down)
         def _hist_forward(event: object) -> None:
             self._input_buffer.history_forward()
 
