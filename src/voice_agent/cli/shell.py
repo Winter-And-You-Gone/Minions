@@ -6,7 +6,7 @@ import asyncio
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import Suggestion
+from prompt_toolkit.auto_suggest import AutoSuggestion, Suggestion
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
@@ -86,7 +86,7 @@ class MinionsShell:
         # 快捷键
         kb = KeyBindings()
 
-        @kb.add("right", filter=~self._session_is_searching)  # type: ignore[arg-type]
+        @kb.add("right")
         def _accept_suggestion(event: object) -> None:
             """按右键接受 auto-suggest。"""
             buf = self._session.app.current_buffer
@@ -98,14 +98,9 @@ class MinionsShell:
             history=FileHistory(str(_HISTORY_FILE)),
             enable_history_search=True,
             complete_while_typing=False,
-            auto_suggest=self._auto_suggest_command,
+            auto_suggest=self._CommandAutoSuggest(self.COMMANDS),
             key_bindings=kb,
         )
-
-    @staticmethod
-    def _session_is_searching() -> bool:
-        """判断是否处于历史搜索模式（此时不禁用右键）。"""
-        return False
 
     # ---- 事件订阅 ----
 
@@ -243,21 +238,30 @@ class MinionsShell:
 
     # ---- 命令自动猜想 ----
 
-    def _auto_suggest_command(self, buffer: object, document: object) -> Suggestion | None:
-        """输入 /h 时淡色显示 /help，右键补全。"""
-        from prompt_toolkit.document import Document
+    class _CommandAutoSuggest(AutoSuggestion):
+        """自动猜想命令：输入 /h 淡色显示 /help，右键补全。"""
 
-        doc: Document = document  # type: ignore[assignment]
-        text = doc.text
+        def __init__(self, commands: dict[str, tuple[str, str]]) -> None:
+            self._cmd_list = sorted(commands)
 
-        if not text.startswith("/"):
+        def get_suggestion(
+            self,
+            buffer: object,
+            document: object,
+        ) -> Suggestion | None:
+            from prompt_toolkit.document import Document
+
+            doc: Document = document  # type: ignore[assignment]
+            text = doc.text
+
+            if not text.startswith("/"):
+                return None
+
+            for cmd in self._cmd_list:
+                if cmd.startswith(text) and len(cmd) > len(text):
+                    return Suggestion(cmd[len(text):])
+
             return None
-
-        for cmd in sorted(self.COMMANDS):
-            if cmd.startswith(text) and len(cmd) > len(text):
-                return Suggestion(cmd[len(text):])
-
-        return None
 
     # ---- 命令处理 ----
 
