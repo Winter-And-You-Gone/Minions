@@ -200,8 +200,8 @@ async def run_mic_test(config_path: str, device_override: int | str | None = Non
         logger.info("[MicTest] 已退出")
 
 
-async def run_cli(config_path: str) -> None:
-    """CLI 交互模式：启动 AgentCore 管道 + 交互式外壳，不使用 ASR/麦克风。"""
+async def run_cli(config_path: str, asr_override: str | None = None) -> None:
+    """CLI 交互模式：启动 AgentCore 管道 + 交互式外壳，可选 ASR 识别。"""
     config = get_config(config_path)
     debug = config.get("app", {}).get("debug", False)
     logger = setup_logging(debug)
@@ -225,9 +225,21 @@ async def run_cli(config_path: str) -> None:
         device=ac.get("device"),
     )
 
+    # ASR 引擎（可选）
+    asr_engine = None
+    asr_engine_name = asr_override or config.get("asr", {}).get("engine", "mock")
+    if asr_engine_name != "mock":
+        asr_engine = build_asr(asr_engine_name, bus, config)
+        logger.info("[系统] ASR 引擎: %s", asr_engine_name)
+
     # 桥接 asr.final → AgentCore
     async def on_asr_final(event: dict) -> None:
         if event.get("type") == "asr.final":
+            logger.info(
+                "[CLI] 收到 asr.final: text=%s source=%s",
+                event.get("text", ""),
+                event.get("source", ""),
+            )
             await agent.handle_final_text(
                 event.get("text", ""),
                 event.get("confidence", 1.0),
@@ -247,7 +259,7 @@ async def run_cli(config_path: str) -> None:
     bus.subscribe(on_command)
 
     # 交互式外壳
-    shell = MinionsShell(bus, agent, state, llm, mic=mic)
+    shell = MinionsShell(bus, agent, state, llm, mic=mic, asr_engine=asr_engine)
     shell.subscribe()
 
     llm_mode = "真实调用" if llm.is_available else "mock 模式"
@@ -256,6 +268,8 @@ async def run_cli(config_path: str) -> None:
     try:
         await shell.run()
     finally:
+        if asr_engine is not None:
+            await asr_engine.stop()
         await llm.close()
         logger.info("[系统] voice-agent CLI 已退出")
 
@@ -273,7 +287,7 @@ def main() -> None:
     parser.add_argument("--asr", default=None, help="ASR 引擎覆盖 (mock / sherpa-onnx)")
     parser.add_argument("--mic-test", action="store_true", help="麦克风测试模式（不启动 ASR/LLM）")
     parser.add_argument("--device", default=None, help="麦克风设备 ID 或名称子串 (仅 --mic-test 时有效)")
-    parser.add_argument("--cli", action="store_true", help="CLI 交互模式（不使用 ASR/麦克风）")
+    parser.add_argument("--cli", action="store_true", help="CLI 交互模式（可选 --asr 启用语音）")
     parser.add_argument("--list-devices", action="store_true", help="列出所有音频设备")
     args = parser.parse_args()
 
@@ -286,7 +300,7 @@ def main() -> None:
             device = int(args.device) if args.device and args.device.isdigit() else args.device
             asyncio.run(run_mic_test(args.config, device))
         elif args.cli:
-            asyncio.run(run_cli(args.config))
+            asyncio.run(run_cli(args.config, args.asr))
         else:
             asyncio.run(run(args.config, args.asr))
     except KeyboardInterrupt:

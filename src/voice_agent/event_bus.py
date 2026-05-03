@@ -2,6 +2,7 @@
 
 import asyncio
 import time
+import traceback
 from collections.abc import Callable, Coroutine
 from typing import Any
 
@@ -38,7 +39,15 @@ class EventBus:
         for cb, outcome in zip(self._subscribers, outcomes):
             if isinstance(outcome, Exception):
                 self._logger.error(
-                    "[EventBus] subscriber %s 异常: %s", getattr(cb, "__name__", str(cb)), outcome
+                    "[EventBus] subscriber %s 异常:\n%s",
+                    getattr(cb, "__name__", str(cb)),
+                    "".join(
+                        traceback.format_exception(
+                            type(outcome),
+                            outcome,
+                            outcome.__traceback__,
+                        )
+                    ),
                 )
 
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import numpy as np
+
 from voice_agent.audio.microphone import Microphone, calculate_rms
 from voice_agent.audio.segmenter import (
     VADSegmenterConfig,
@@ -146,7 +148,13 @@ class SherpaOnnxASR:
                     raise ValueError(f"SherpaOnnxASR 配置错误: {key} 文件不存在: {val}")
 
     def _create_recognizer(self):
-        """创建 sherpa-onnx OfflineRecognizer，适配不同模型配置。"""
+        """创建 sherpa-onnx OfflineRecognizer，适配不同模型配置。
+
+        模型类型选择优先级：
+          1. config 中显式设置的 ``type`` 字段
+          2. 根据 model 文件名自动检测（sense_voice / paraformer / whisper）
+          3. encoder+decoder+joiner transducer 配置
+        """
         import sherpa_onnx
 
         tokens = self._config.get("tokens", "")
@@ -158,51 +166,46 @@ class SherpaOnnxASR:
         decoding_method = self._config.get("decoding_method", "greedy_search")
         provider = self._config.get("provider", "cpu")
 
+        # 从配置读取模型类型、语言、ITN 开关
+        model_type = self._config.get("type", "").strip().lower()
+        language = self._config.get("language", "zh")
+        use_itn = self._config.get("use_itn", True)
+
         model_path = str(Path(model).resolve()) if model else ""
 
-        # 根据模型名称自动选择工厂方法
-        if model_path and ("sensevoice" in model.lower() or "sense_voice" in model.lower() or "sense-voice" in model.lower()):
+        # 确定模型类型：显式配置 > 文件名推断
+        if not model_type:
+            if "sensevoice" in model.lower() or "sense_voice" in model.lower() or "sense-voice" in model.lower():
+                model_type = "sense_voice"
+            elif "paraformer" in model.lower():
+                model_type = "paraformer"
+            elif "whisper" in model.lower():
+                model_type = "whisper"
+
+        if model_type == "sense_voice":
             recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
                 model=model_path,
                 tokens=str(Path(tokens).resolve()),
                 num_threads=num_threads,
                 provider=provider,
-                language="zh",
-                use_itn=True,
+                language=language,
+                use_itn=use_itn,
             )
-        elif model_path and "paraformer" in model.lower():
+        elif model_type == "paraformer":
             recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
                 paraformer=model_path,
                 tokens=str(Path(tokens).resolve()),
                 num_threads=num_threads,
                 provider=provider,
             )
-        elif model_path and "whisper" in model.lower():
+        elif model_type == "whisper":
             recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
                 encoder=model_path,
-                decoder="",  # whisper 需要用单独的 encoder/decoder
+                decoder="",
                 tokens=str(Path(tokens).resolve()),
                 num_threads=num_threads,
                 provider=provider,
             )
-        elif model_path:
-            # 默认尝试 SenseVoice（最通用的多语言模型）
-            try:
-                recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
-                    model=model_path,
-                    tokens=str(Path(tokens).resolve()),
-                    num_threads=num_threads,
-                    provider=provider,
-                    language="zh",
-                    use_itn=True,
-                )
-            except Exception:
-                recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
-                    paraformer=model_path,
-                    tokens=str(Path(tokens).resolve()),
-                    num_threads=num_threads,
-                    provider=provider,
-                )
         elif encoder and decoder and joiner:
             recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
                 encoder=str(Path(encoder).resolve()),
@@ -273,7 +276,6 @@ class SherpaOnnxASR:
 
     def _recognize_audio(self, samples: np.ndarray, sample_rate: int) -> str:
         """在 executor 中执行离线识别。"""
-        import numpy as np
         import sherpa_onnx  # noqa: F401
 
         # 确保 float32 且为一维

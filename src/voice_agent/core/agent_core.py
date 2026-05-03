@@ -30,14 +30,17 @@ class AgentCore:
 
     async def handle_final_text(self, text: str, confidence: float = 1.0) -> None:
         """处理 ASR final 文本。"""
-        # 1. 介入判断（在更新 state 之前，避免重复文本误判）
+        # 1. 先用当前 state 做 Gate 判断（必须在更新 state 之前）
         gate_result = self._gate.evaluate(text, self._state, confidence)
 
-        # 2. 更新状态
-        self._state.mark_user_final_text(text)
+        # 2. 再更新 state，避免提前更新导致重复文本误判
+        normalized_text = gate_result.text or text
+        self._state.mark_user_final_text(normalized_text)
+
         await self._bus.publish({
             "type": "gate.result",
             "text": text,
+            "normalized_text": normalized_text,
             "action": gate_result.action.value,
             "score": gate_result.score,
             "reason": gate_result.reason,
@@ -73,6 +76,20 @@ class AgentCore:
                 return
 
         # 4. AGENT → 调用 LLM 生成回复
+        # 系统信息问题由本地回答，不让 LLM 猜
+        if self._is_model_info_question(text):
+            model_name = self._llm.model or "未配置模型"
+            reply = f"我当前连接的模型是 {model_name}。"
+            self._state.mark_agent_replied()
+            self._state.enter_cooldown()
+            self._recent_context.append(f"用户: {text}")
+            self._recent_context.append(f"AI: {reply}")
+            if len(self._recent_context) > 20:
+                self._recent_context = self._recent_context[-20:]
+            await self._bus.publish({"type": "agent.reply", "text": reply})
+            self._logger.info("[Agent] reply=%s", reply)
+            return
+
         context = "\n".join(self._recent_context[-5:]) if self._recent_context else ""
         reply = await self._llm.generate_reply(text, context)
         self._state.mark_agent_replied()

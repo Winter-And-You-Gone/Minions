@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import math
 from pathlib import Path
 
@@ -115,12 +116,14 @@ class MinionsShell:
         state: ConversationState,
         llm: LLMClient,
         mic: Microphone | None = None,
+        asr_engine: object | None = None,
     ) -> None:
         self._bus = bus
         self._agent = agent
         self._state = state
         self._llm = llm
         self._mic = mic
+        self._asr_engine = asr_engine
         self._logger = get_logger()
 
         # 状态
@@ -179,21 +182,43 @@ class MinionsShell:
         # 收集所有需要并发运行的任务
         tasks = [input_task, event_task]
 
-        done, pending = await asyncio.wait(
-            tasks, return_when=asyncio.FIRST_COMPLETED
-        )
-        for task in pending:
-            task.cancel()
+        # 启动 ASR 引擎（如果传入）
+        if self._asr_engine is not None:
+            asr_task = asyncio.create_task(self._asr_engine.start())
+            tasks.append(asr_task)
+        else:
+            asr_task = None
 
-        # 清理麦克风监测
-        if self._mic_monitor_task:
-            self._mic_monitor_task.cancel()
-            self._mic_monitor_task = None
-        if self._mic_monitoring:
-            self._mic_monitoring = False
-            await self._mic.stop()
+        try:
+            done, pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
 
-        self._console.print()
+            for task in pending:
+                task.cancel()
+
+            for task in pending:
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        finally:
+            # 清理麦克风监测
+            if self._mic_monitor_task:
+                self._mic_monitor_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self._mic_monitor_task
+                self._mic_monitor_task = None
+
+            if self._mic_monitoring:
+                self._mic_monitoring = False
+                if self._mic is not None:
+                    with contextlib.suppress(Exception):
+                        await self._mic.stop()
+
+            # 取消事件订阅，防止重复订阅
+            self.unsubscribe()
+
+            self._console.print()
 
     # ---- 输入循环 ----
 
@@ -214,6 +239,9 @@ class MinionsShell:
 
             if text.startswith("/"):
                 await self._dispatch_command(text)
+                # /exit 会把 running 设为 False，必须立刻退出
+                if not self.running:
+                    return
             else:
                 await self._publish_user_text(text)
 
@@ -234,6 +262,8 @@ class MinionsShell:
     # ---- 事件渲染 ----
 
     def _render_event(self, etype: str, event: dict) -> None:
+        self._logger.debug("[CLI] event: %s", etype)
+
         if etype == "audio.level":
             self._latest_rms = event.get("rms", 0.0)
             return  # VU 表在 toolbar 显示，不打印到主区域
@@ -245,6 +275,10 @@ class MinionsShell:
             "user.text": self._render_user_text,
             "bubble": self._render_bubble,
             "system": self._render_system,
+            "asr.speech_start": self._render_asr_speech_start,
+            "asr.speech_end": self._render_asr_speech_end,
+            "asr.final": self._render_asr_final,
+            "asr.error": self._render_asr_error,
         }
         handler = renderers.get(etype)
         if handler:
@@ -290,15 +324,47 @@ class MinionsShell:
         msg = event.get("message", "")
         self._console.print(Text(f"  ┊ {msg}", style="dim"))
 
+    def _render_asr_speech_start(self, event: dict) -> None:
+        self._console.print(Text("  ┊ [语音] 检测到语音开始...", style="bold cyan"))
+
+    def _render_asr_speech_end(self, event: dict) -> None:
+        dur = event.get("duration_ms", 0)
+        forced = event.get("forced", False)
+        tag = "（强制截断）" if forced else ""
+        self._console.print(Text(f"  ┊ [语音] 结束 ({dur}ms{tag}), 识别中...", style="cyan"))
+
+    def _render_asr_final(self, event: dict) -> None:
+        text = event.get("text", "")
+        self._console.print(Text(f"  ┊ [ASR] {text}", style="bold cyan"))
+
+    def _render_asr_error(self, event: dict) -> None:
+        msg = event.get("message", "")
+        self._console.print(Text(f"  ┊ [ASR 错误] {msg}", style="bold red"))
+
     # ---- 用户输入发布 ----
 
     async def _publish_user_text(self, text: str) -> None:
-        self._state.mark_user_final_text(text)
-        await self._bus.publish({"type": "user.text", "text": text})
+        """发布用户输入。
+
+        注意：
+        - CLI 只负责把输入发布为事件。
+        - 不要在这里调用 state.mark_user_final_text()。
+        - ConversationState 必须由 AgentCore.handle_final_text() 统一更新。
+        - 否则 Gate 会把当前输入误判为重复文本。
+        """
+        self._logger.info("[CLI] 用户输入: %s", text)
+
+        await self._bus.publish({
+            "type": "user.text",
+            "text": text,
+            "source": "cli",
+        })
+
         await self._bus.publish({
             "type": "asr.final",
             "text": text,
             "confidence": 1.0,
+            "source": "cli",
         })
 
     # ---- 命令自动猜想 ----
@@ -390,12 +456,30 @@ class MinionsShell:
         self._console.print(table)
 
     async def _cmd_exit(self) -> None:
+        """退出 CLI。必须确保输入循环和事件循环都能结束。"""
         self.running = False
+
+        # 停止麦克风监测任务
         if self._mic_monitor_task:
             self._mic_monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._mic_monitor_task
             self._mic_monitor_task = None
+
         self._mic_monitoring = False
+
+        # 停止麦克风
+        if self._mic is not None:
+            with contextlib.suppress(Exception):
+                await self._mic.stop()
+
+        # 停止 ASR 引擎
+        if self._asr_engine is not None:
+            await self._asr_engine.stop()
+
+        # 通知主程序关闭 LLM/WebSocket 等资源
         await self._bus.publish({"type": "command.exit"})
+
         self._console.print(Text("  ┊ 再见 👋", style="dim"))
 
     async def _cmd_pause(self) -> None:

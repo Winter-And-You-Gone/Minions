@@ -16,6 +16,12 @@ asr:
   sherpa_onnx:
     enabled: false
 
+    # 模型类型（sense_voice / paraformer / whisper / transducer）
+    # 留空时根据 model 文件名自动检测
+    type: "sense_voice"
+    language: "zh"
+    use_itn: true
+
     # offline recognizer 模型路径
     model_dir: "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
     tokens: "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt"

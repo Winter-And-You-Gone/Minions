@@ -26,7 +26,11 @@ where = ["src"]
 [project.optional-dependencies]
 dev = [
     "pytest",
+    "pytest-asyncio",
 ]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
 asr = [
     "sherpa-onnx",
 ]
