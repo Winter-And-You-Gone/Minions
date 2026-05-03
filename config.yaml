@@ -6,7 +6,7 @@ audio:
   sample_rate: 16000
   channels: 1
   chunk_ms: 100
-  device: null
+  device: 1
 
 asr:
   engine: "mock"
