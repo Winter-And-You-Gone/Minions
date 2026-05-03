@@ -1,0 +1,53 @@
+"""配置系统：读取 config.yaml，支持 ${ENV_NAME} 环境变量替换。"""
+
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import yaml
+from dotenv import load_dotenv
+
+_ENV_VAR_RE = re.compile(r"\$\{([^}]+)\}")
+
+
+def _resolve_env_vars(value: Any) -> Any:
+    """递归替换字符串中的 ${ENV_NAME} 为环境变量值。"""
+    if isinstance(value, str):
+        def _replace(m: re.Match) -> str:
+            return os.environ.get(m.group(1), "")
+        return _ENV_VAR_RE.sub(_replace, value)
+    if isinstance(value, dict):
+        return {k: _resolve_env_vars(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_env_vars(item) for item in value]
+    return value
+
+
+_config_cache: dict | None = None
+
+
+def get_config(config_path: str = "config.yaml") -> dict:
+    """读取并返回配置字典。结果会被缓存，环境变量已替换。"""
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
+
+    load_dotenv(".env")
+
+    path = Path(config_path)
+    if not path.exists():
+        raise FileNotFoundError(f"配置文件不存在: {path}")
+
+    with open(path, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f)
+
+    _config_cache = _resolve_env_vars(raw)
+    return _config_cache
+
+
+def reload_config(config_path: str = "config.yaml") -> dict:
+    """强制重新加载配置（绕过缓存）。"""
+    global _config_cache
+    _config_cache = None
+    return get_config(config_path)

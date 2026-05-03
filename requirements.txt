@@ -1,0 +1,8 @@
+sounddevice
+numpy
+pyyaml
+python-dotenv
+httpx
+websockets
+rich
+pytest

@@ -1,0 +1,53 @@
+app:
+  name: "voice-agent"
+  debug: true
+
+audio:
+  sample_rate: 16000
+  channels: 1
+  chunk_ms: 100
+  device: null
+
+asr:
+  engine: "mock"
+  language: "zh"
+  mode: "streaming"
+
+  sherpa_onnx:
+    enabled: false
+    model_dir: "./models/sherpa-onnx"
+    tokens: ""
+    encoder: ""
+    decoder: ""
+    joiner: ""
+
+intervention:
+  min_text_length: 4
+  min_asr_confidence: 0.55
+  cooldown_seconds: 5
+  conversation_timeout_seconds: 60
+
+  thresholds:
+    bubble: 15
+    judge: 30
+    agent: 60
+
+  uncertain_action: "judge"
+
+llm:
+  enabled: true
+  provider: "openai_compatible"
+  api_base: "${LLM_API_BASE}"
+  api_key: "${LLM_API_KEY}"
+  model: "${LLM_MODEL}"
+  timeout_seconds: 30
+
+websocket:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8765
+
+privacy:
+  save_audio: false
+  save_transcript: false
+  local_stt_only: true
