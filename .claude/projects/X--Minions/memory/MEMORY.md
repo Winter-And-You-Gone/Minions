@@ -1,3 +1,0 @@
-- [使用中文回答](communication_cn.md) — 所有回答必须使用中文，除非是技术专有名词或无法翻译的缩写
-- [改代码后编译提交同步](workflow_compile_commit.md) — 每次改代码后本地编译，成功后 commit 并 push 到 GitHub
-- [conda环境Minions](conda_env_minions.md) — 所有 Python 命令必须在 conda Minions 环境中运行，不可使用系统全局 Python

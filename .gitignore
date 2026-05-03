@@ -19,5 +19,8 @@ __pycache__/
 .env.local
 *.local
 
+# Claude Code (personal memory files)
+.claude/projects/
+
 # Logs
 *.log
