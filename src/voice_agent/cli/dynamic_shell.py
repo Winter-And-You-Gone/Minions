@@ -275,11 +275,15 @@ class DynamicMinionsShell:
     # 输入处理
     # ------------------------------------------------------------------
 
-    def _on_accept(self, buff: Buffer) -> bool:
-        text = buff.text.strip()
-        buff.text = ""
+    def _accept_buffer(self) -> None:
+        """提交当前输入框内容。"""
+        text = self._input_buffer.text.strip()
+        self._input_buffer.text = ""
         if text:
             asyncio.create_task(self._handle_input(text))
+
+    def _on_accept(self, buff: Buffer) -> bool:
+        self._accept_buffer()
         return True
 
     async def _handle_input(self, text: str) -> None:
@@ -290,7 +294,6 @@ class DynamicMinionsShell:
             self._scroll_to_bottom()
             self._app.invalidate()
 
-            self._state.mark_user_final_text(text)
             await self._bus.publish({"type": "user.text", "text": text})
             await self._bus.publish({
                 "type": "asr.final",
