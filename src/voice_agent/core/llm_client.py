@@ -164,6 +164,53 @@ class LLMClient:
 
         return await self.chat(messages)
 
+    async def judge_wake_session_continue(
+        self,
+        text: str,
+        recent_context: str = "",
+    ) -> dict:
+        """判断用户是否还在对 AI 说话。"""
+        if not self.is_available:
+            return {
+                "continue_session": True,
+                "confidence": 0.5,
+                "reason": "LLM 不可用，默认继续唤醒会话",
+            }
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是常驻语音助手的会话判断器。"
+                    "用户之前已经喊过 AI 的名字，所以进入了连续对话。"
+                    "现在请判断用户这句话是否仍然是在对 AI 说话。"
+                    "如果明显是在和别人说话、看电视对白、或说不用 AI 了，则 continue_session=false。"
+                    "如果是追问、补充、命令、问题、短句如'然后呢'，则 continue_session=true。"
+                    "只输出 JSON。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"最近上下文：{recent_context}\n"
+                    f"当前用户语音：{text}\n\n"
+                    "输出格式："
+                    '{"continue_session": true, "confidence": 0.0, "reason": "简短原因"}'
+                ),
+            },
+        ]
+
+        raw = await self.chat(messages)
+        json_str = self._extract_json(raw)
+        try:
+            return json.loads(json_str)
+        except json.JSONDecodeError:
+            return {
+                "continue_session": True,
+                "confidence": 0.3,
+                "reason": f"解析失败，默认继续: {raw[:100]}",
+            }
+
     def _mock_reply(self, messages: list[dict[str, str]]) -> str:
         user_msg = ""
         for m in messages:

@@ -228,6 +228,14 @@ class DynamicMinionsShell:
             if msg:
                 self.ui.add_system_message(msg)
 
+        # 更新唤醒会话状态栏
+        if hasattr(self._state, "is_wake_session_active") and self._state.is_wake_session_active():
+            remain = self._state.seconds_until_wake_session_timeout()
+            wake_name = self._state.wake_name or "唤醒"
+            self.ui.status_line = f"{wake_name} 唤醒会话中，剩余 {remain:.0f}s"
+        else:
+            self.ui.status_line = ""
+
         self._app.invalidate()
 
     def subscribe(self) -> None:
@@ -318,6 +326,8 @@ class DynamicMinionsShell:
         "/status": ("查看系统状态", "status"),
         "/model": ("查看当前 LLM 模型", "model"),
         "/mic": ("麦克风管理", "mic"),
+        "/name": ("设置或查看 AI 名字", "name"),
+        "/名字": ("设置或查看 AI 名字", "name"),
     }
 
     async def _dispatch_command(self, raw: str) -> None:
@@ -397,6 +407,77 @@ class DynamicMinionsShell:
     async def _cmd_model(self) -> None:
         model = self._llm.model if self._llm.model else "mock"
         self.ui.add_system_message(f"当前连接的模型是：{model}")
+        self._app.invalidate()
+
+    async def _cmd_name(self, *args: str) -> None:
+        matcher = getattr(self._agent._gate, "wake_matcher", None)
+
+        if not args or not matcher:
+            if matcher is None:
+                self.ui.add_system_message("当前未启用唤醒名功能")
+            else:
+                cfg = matcher.config
+                self.ui.add_system_message(
+                    f"当前名字: {cfg.name}\n"
+                    f"唤醒别名: {', '.join(cfg.aliases)}\n"
+                    "用法:\n"
+                    "  /name set 米粒\n"
+                    "  /name alias add 迷你\n"
+                    "  /name alias remove 迷你\n"
+                    "  /name alias list"
+                )
+            self._app.invalidate()
+            return
+
+        if matcher is None:
+            self.ui.add_system_message("当前未启用唤醒名功能")
+            self._app.invalidate()
+            return
+
+        cfg = matcher.config
+
+        if args[0] == "set" and len(args) >= 2:
+            new_name = args[1]
+            cfg.name = new_name
+            if new_name not in cfg.aliases:
+                cfg.aliases.insert(0, new_name)
+            self.ui.add_system_message(f"AI 名字已设置为：{new_name}")
+            self._app.invalidate()
+            return
+
+        if args[0] == "alias" and len(args) >= 2:
+            action = args[1]
+
+            if action == "add" and len(args) >= 3:
+                alias = args[2]
+                if alias not in cfg.aliases:
+                    cfg.aliases.append(alias)
+                self.ui.add_system_message(f"已添加唤醒别名：{alias}")
+                self._app.invalidate()
+                return
+
+            if action == "remove" and len(args) >= 3:
+                alias = args[2]
+                cfg.aliases = [x for x in cfg.aliases if x != alias]
+                self.ui.add_system_message(f"已移除唤醒别名：{alias}")
+                self._app.invalidate()
+                return
+
+            if action == "list":
+                self.ui.add_system_message(
+                    f"当前名字: {cfg.name}\n唤醒别名: {', '.join(cfg.aliases)}"
+                )
+                self._app.invalidate()
+                return
+
+        self.ui.add_system_message(
+            "用法:\n"
+            "  /name\n"
+            "  /name set 米粒\n"
+            "  /name alias add 迷你\n"
+            "  /name alias remove 迷你\n"
+            "  /name alias list"
+        )
         self._app.invalidate()
 
     async def _cmd_mic(self, *args: str) -> None:

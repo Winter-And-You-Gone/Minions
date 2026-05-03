@@ -77,6 +77,20 @@ llm:
   model: "${LLM_MODEL}"
   timeout_seconds: 30
 
+assistant:
+  name: "米粒"
+  wake_aliases:
+    - "米粒"
+    - "迷你"
+    - "米妮"
+    - "小米"
+  wake:
+    enabled: true
+    session_seconds: 120
+    silence_timeout_seconds: 90
+    strip_wake_name: true
+    allow_llm_turn_away_judge: true
+
 websocket:
   enabled: true
   host: "127.0.0.1"

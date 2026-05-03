@@ -32,8 +32,33 @@ class AgentCore:
         """处理 ASR final 文本。"""
         # 1. 先用当前 state 做 Gate 判断（必须在更新 state 之前）
         gate_result = self._gate.evaluate(text, self._state, confidence)
+        metadata = gate_result.metadata or {}
 
-        # 2. 再更新 state，避免提前更新导致重复文本误判
+        # 2. 检查结束唤醒会话指令
+        if metadata.get("end_wake_session"):
+            self._state.end_wake_session()
+            await self._bus.publish({
+                "type": "state.change",
+                "state": self._state.mode,
+                "reason": "end_wake_session",
+            })
+            self._logger.info("[Wake] 唤醒会话已结束")
+            return
+
+        # 3. 唤醒名检测 → 激活唤醒会话
+        if metadata.get("wake_detected"):
+            wake_seconds = getattr(self._gate.wake_matcher.config, "session_seconds", 120)
+            wake_name = metadata.get("wake_name", "")
+            self._state.activate_wake_session(wake_seconds, wake_name)
+            self._logger.info("[Wake] 唤醒会话已激活: name=%s seconds=%s", wake_name, wake_seconds)
+            # 广播状态变化
+            await self._bus.publish({
+                "type": "state.change",
+                "state": self._state.mode,
+                "reason": f"wake:{wake_name}",
+            })
+
+        # 4. 更新 state — 使用 gate_result.text（可能已被 strip_wake_name 处理）
         normalized_text = gate_result.text or text
         self._state.mark_user_final_text(normalized_text)
 
@@ -52,7 +77,12 @@ class AgentCore:
             gate_result.reason,
         )
 
-        # 2. 根据 action 处理
+        # 5. 唤醒会话内每次有效输入刷新超时
+        if self._state.is_wake_session_active():
+            wake_seconds = getattr(self._gate.wake_matcher.config, "session_seconds", 120)
+            self._state.refresh_wake_session(wake_seconds)
+
+        # 6. 根据 action 处理
         if gate_result.action == GateAction.SILENT:
             return
 
@@ -64,18 +94,57 @@ class AgentCore:
             })
             return
 
-        # 3. JUDGE → 调用 LLM 二次判断
+        # 7. 单独喊名字时本地回复
+        if metadata.get("wake_detected") and not metadata.get("text_without_name"):
+            reply = "我在。"
+            self._state.mark_agent_replied()
+            self._state.enter_cooldown()
+            self._recent_context.append(f"用户: {text}")
+            self._recent_context.append(f"AI: {reply}")
+            if len(self._recent_context) > 20:
+                self._recent_context = self._recent_context[-20:]
+            await self._bus.publish({"type": "agent.reply", "text": reply})
+            self._logger.info("[Agent] 唤醒回复: %s", reply)
+            return
+
+        # 8. JUDGE → 调用 LLM 二次判断
         if gate_result.action == GateAction.JUDGE:
-            judge = await self._llm.judge_intervention(
-                text,
-                self._state.mode,
-                self._state.seconds_since_last_reply() < 60,
-            )
-            self._logger.info("[Judge] result=%s", judge)
+            should_skip_judge = False
+
+            # 唤醒会话内可让 LLM 判断是否转向别人
+            if self._state.is_wake_session_active():
+                allow_judge = getattr(
+                    self._gate.wake_matcher.config, "allow_llm_turn_away_judge", True
+                )
+                if allow_judge:
+                    turn_away = await self._llm.judge_wake_session_continue(
+                        normalized_text,
+                        "\n".join(self._recent_context[-6:]),
+                    )
+                    if not turn_away.get("continue_session", True):
+                        self._state.end_wake_session()
+                        await self._bus.publish({
+                            "type": "state.change",
+                            "state": self._state.mode,
+                            "reason": "llm_turn_away",
+                        })
+                        self._logger.info("[Wake] LLM 判断转向别人，结束唤醒会话")
+                        return
+                    # LLM 确认仍在对话，跳过 JUDGE 直接进入 AGENT
+                    should_skip_judge = True
+                    self._logger.info("[Wake] LLM 判断仍在对话，跳过 JUDGE 进入 AGENT")
+
+            if not should_skip_judge:
+                judge = await self._llm.judge_intervention(
+                    text,
+                    self._state.mode,
+                    self._state.seconds_since_last_reply() < 60,
+                )
+                self._logger.info("[Judge] result=%s", judge)
             if not judge.get("should_reply", False):
                 return
 
-        # 4. AGENT → 调用 LLM 生成回复
+        # 9. AGENT → 调用 LLM 生成回复
         # 系统信息问题由本地回答，不让 LLM 猜
         if self._is_model_info_question(text):
             model_name = self._llm.model or "未配置模型"

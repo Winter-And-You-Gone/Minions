@@ -22,6 +22,11 @@ class ConversationState:
     last_user_text: str = ""
     last_final_text_at: float = 0.0
 
+    # 唤醒会话
+    wake_session_until: float = 0.0
+    last_wake_at: float = 0.0
+    wake_name: str = ""
+
     _cooldown_seconds: float = 5.0
     _conversation_timeout_seconds: float = 60.0
 
@@ -106,3 +111,32 @@ class ConversationState:
 
     def is_paused(self) -> bool:
         return self.mode == "paused"
+
+    # ---- 唤醒会话 ----
+
+    def activate_wake_session(self, seconds: float, wake_name: str = "") -> None:
+        now = time.time()
+        self.last_wake_at = now
+        self.wake_session_until = now + seconds
+        self.wake_name = wake_name
+        if self.mode != "paused":
+            self.mode = "active_chat"
+
+    def refresh_wake_session(self, seconds: float) -> None:
+        if self.mode == "paused":
+            return
+        self.wake_session_until = time.time() + seconds
+
+    def end_wake_session(self) -> None:
+        self.wake_session_until = 0.0
+        self.wake_name = ""
+        if self.mode != "paused":
+            self.mode = "passive_listening"
+
+    def is_wake_session_active(self) -> bool:
+        if self.mode == "paused":
+            return False
+        return time.time() < self.wake_session_until
+
+    def seconds_until_wake_session_timeout(self) -> float:
+        return max(0.0, self.wake_session_until - time.time())

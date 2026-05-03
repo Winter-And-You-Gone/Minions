@@ -12,6 +12,7 @@ from voice_agent.core.conversation_state import ConversationState
 from voice_agent.core.intervention_gate import InterventionGate
 from voice_agent.core.llm_client import LLMClient
 from voice_agent.core.agent_core import AgentCore
+from voice_agent.core.wake_name import WakeNameMatcher
 from voice_agent.asr.mock_asr import MockASR
 from voice_agent.asr.sherpa_onnx_asr import SherpaOnnxASR
 from voice_agent.output.console_output import handle_console_output
@@ -23,6 +24,7 @@ from voice_agent.cli.dynamic_shell import DynamicMinionsShell
 def build_gate(config: dict) -> InterventionGate:
     ic = config.get("intervention", {})
     thresholds = ic.get("thresholds", {})
+    wake_matcher = WakeNameMatcher.from_config(config)
     return InterventionGate(
         min_text_length=ic.get("min_text_length", 4),
         min_asr_confidence=ic.get("min_asr_confidence", 0.55),
@@ -31,6 +33,7 @@ def build_gate(config: dict) -> InterventionGate:
         threshold_judge=thresholds.get("judge", 30),
         threshold_agent=thresholds.get("agent", 60),
         uncertain_action=ic.get("uncertain_action", "judge"),
+        wake_matcher=wake_matcher,
     )
 
 
