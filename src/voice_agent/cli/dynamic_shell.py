@@ -21,7 +21,7 @@ from voice_agent.cli.shell import (
     _probe_device_rms,
     _resolve_device,
 )
-from voice_agent.cli.ui_state import GateSnapshot, UIState
+from voice_agent.cli.ui_state import GateView, UIState
 from voice_agent.core.agent_core import AgentCore
 from voice_agent.core.conversation_state import ConversationState
 from voice_agent.core.llm_client import LLMClient
@@ -185,7 +185,7 @@ class DynamicMinionsShell:
             self._scroll_to_bottom()
 
         elif etype == "gate.result":
-            self.ui.latest_gate = GateSnapshot(
+            self.ui.latest_gate = GateView(
                 action=event.get("action", ""),
                 score=event.get("score", 0),
                 reason=event.get("reason", ""),
@@ -213,7 +213,13 @@ class DynamicMinionsShell:
             self._scroll_to_bottom()
 
         elif etype == "asr.error":
+            self.ui.asr.status = "error"
             self.ui.add_system_message(f"ASR 错误: {event.get('message', '')}")
+
+        elif etype == "asr.status":
+            self.ui.asr.status = event.get("status", "idle")
+            if event.get("model"):
+                self.ui.asr.model = event["model"]
 
         elif etype == "system":
             msg = event.get("message", "")

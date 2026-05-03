@@ -2,8 +2,8 @@
 
 import math
 
-from voice_agent.cli.formatters import format_chat, format_decision, vu_bar
-from voice_agent.cli.ui_state import UIState, GateSnapshot
+from voice_agent.cli.formatters import format_chat, format_decision, format_header, vu_bar
+from voice_agent.cli.ui_state import UIState, ASRView, LLMView, GateView, GateSnapshot
 
 
 class TestVuBar:
@@ -105,7 +105,7 @@ class TestFormatDecision:
 
     def test_gate_action_displayed(self) -> None:
         s = UIState()
-        s.latest_gate = GateSnapshot(action="agent", score=90, reason="test reason")
+        s.latest_gate = GateView(action="agent", score=90, reason="test reason")
         frags = format_decision(s)
         combined = "".join(t for _, t in frags)
         assert "agent" in combined
@@ -119,3 +119,46 @@ class TestFormatDecision:
         combined = "".join(t for _, t in frags)
         assert "silent" in combined
         assert "5" in combined
+
+
+class TestFormatHeader:
+    def test_basic_state(self) -> None:
+        s = UIState()
+        frags = format_header(s)
+        combined = "".join(t for _, t in frags)
+        assert "Minions" in combined
+        assert "passive_listening" in combined
+
+    def test_shows_llm_model(self) -> None:
+        s = UIState(llm=LLMView(model="gpt-4", available=True))
+        frags = format_header(s)
+        combined = "".join(t for _, t in frags)
+        assert "gpt-4" in combined
+
+    def test_shows_asr_status(self) -> None:
+        s = UIState(asr=ASRView(status="listening"))
+        frags = format_header(s)
+        combined = "".join(t for _, t in frags)
+        assert "listening" in combined
+
+    def test_shows_paused(self) -> None:
+        s = UIState(paused=True)
+        frags = format_header(s)
+        combined = "".join(t for _, t in frags)
+        assert "暂停" in combined
+
+    def test_mic_monitoring(self) -> None:
+        s = UIState()
+        s.mic.monitoring = True
+        s.mic.rms = 0.05
+        s.mic.device_name = "Test Mic"
+        frags = format_header(s)
+        combined = "".join(t for _, t in frags)
+        assert "Test Mic" in combined
+
+    def test_mic_not_monitoring(self) -> None:
+        s = UIState()
+        s.mic.monitoring = False
+        frags = format_header(s)
+        combined = "".join(t for _, t in frags)
+        assert "麦克风已停止" in combined

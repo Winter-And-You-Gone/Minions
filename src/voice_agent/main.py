@@ -17,7 +17,7 @@ from voice_agent.asr.sherpa_onnx_asr import SherpaOnnxASR
 from voice_agent.output.console_output import handle_console_output
 from voice_agent.output.websocket_server import WebSocketServer
 from voice_agent.audio.microphone import Microphone, calculate_rms
-from voice_agent.cli.shell import MinionsShell
+from voice_agent.cli.dynamic_shell import DynamicMinionsShell
 
 
 def build_gate(config: dict) -> InterventionGate:
@@ -224,7 +224,11 @@ async def run_cli(
     config = get_config(config_path)
     config = apply_runtime_overrides(config, vad_threshold)
     debug = config.get("app", {}).get("debug", False)
-    logger = setup_logging(debug)
+    logger = setup_logging(
+        debug,
+        console=False,
+        log_file="logs/minions.log",
+    )
 
     # 初始化各组件
     bus = EventBus()
@@ -279,7 +283,7 @@ async def run_cli(
     bus.subscribe(on_command)
 
     # 交互式外壳
-    shell = MinionsShell(bus, agent, state, llm, mic=mic, asr_engine=asr_engine)
+    shell = DynamicMinionsShell(bus, agent, state, llm, mic=mic, asr_engine=asr_engine)
     shell.subscribe()
 
     llm_mode = "真实调用" if llm.is_available else "mock 模式"

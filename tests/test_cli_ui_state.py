@@ -1,6 +1,15 @@
 """测试 UIState 数据模型。"""
 
-from voice_agent.cli.ui_state import UIState, ChatMessage, GateSnapshot, MicSnapshot, MessageRole
+from voice_agent.cli.ui_state import (
+    UIState,
+    ChatMessage,
+    GateView,
+    GateSnapshot,
+    ASRView,
+    LLMView,
+    MicSnapshot,
+    MessageRole,
+)
 
 
 class TestUIState:
@@ -57,20 +66,68 @@ class TestUIState:
         assert s.hidden_message_count == 0
         assert s.visible_messages == []
 
-    def test_gate_snapshot_update(self) -> None:
+    def test_message_timestamp_set(self) -> None:
+        import time
+        before = time.time()
+        msg = ChatMessage(role=MessageRole.USER, text="hi")
+        after = time.time()
+        assert before <= msg.timestamp <= after
+
+
+class TestGateView:
+    def test_update(self) -> None:
         s = UIState()
-        s.latest_gate = GateSnapshot(action="agent", score=90, reason="test")
+        s.latest_gate = GateView(action="agent", score=90, reason="test")
         assert s.latest_gate.action == "agent"
         assert s.latest_gate.score == 90
         assert s.latest_gate.reason == "test"
 
-    def test_gate_snapshot_defaults(self) -> None:
-        g = GateSnapshot()
+    def test_defaults(self) -> None:
+        g = GateView()
         assert g.action == ""
         assert g.score == 0
         assert g.reason == ""
 
-    def test_mic_snapshot_update(self) -> None:
+    def test_backward_compat_alias(self) -> None:
+        """GateSnapshot 是 GateView 的别名，保证向后兼容。"""
+        assert GateSnapshot is GateView
+        g = GateSnapshot(action="silent", score=5)
+        assert isinstance(g, GateView)
+        assert g.action == "silent"
+
+
+class TestASRView:
+    def test_defaults(self) -> None:
+        a = ASRView()
+        assert a.status == "idle"
+        assert a.model == ""
+
+    def test_ui_state_has_asr(self) -> None:
+        s = UIState()
+        assert isinstance(s.asr, ASRView)
+        s.asr.status = "listening"
+        s.asr.model = "sense-voice"
+        assert s.asr.status == "listening"
+        assert s.asr.model == "sense-voice"
+
+
+class TestLLMView:
+    def test_defaults(self) -> None:
+        l = LLMView()
+        assert l.model == ""
+        assert l.available is False
+
+    def test_ui_state_has_llm(self) -> None:
+        s = UIState()
+        assert isinstance(s.llm, LLMView)
+        s.llm.model = "gpt-4"
+        s.llm.available = True
+        assert s.llm.model == "gpt-4"
+        assert s.llm.available is True
+
+
+class TestMicSnapshot:
+    def test_update(self) -> None:
         s = UIState()
         s.mic.monitoring = True
         s.mic.rms = 0.05
@@ -79,15 +136,8 @@ class TestUIState:
         assert s.mic.rms == 0.05
         assert s.mic.device_name == "Realtek"
 
-    def test_mic_snapshot_defaults(self) -> None:
+    def test_defaults(self) -> None:
         m = MicSnapshot()
         assert m.monitoring is False
         assert m.rms == 0.0
         assert m.device_name == ""
-
-    def test_message_timestamp_set(self) -> None:
-        import time
-        before = time.time()
-        msg = ChatMessage(role=MessageRole.USER, text="hi")
-        after = time.time()
-        assert before <= msg.timestamp <= after

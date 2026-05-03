@@ -19,10 +19,22 @@ class ChatMessage:
 
 
 @dataclass
-class GateSnapshot:
+class GateView:
     action: str = ""
     score: int = 0
     reason: str = ""
+
+
+@dataclass
+class ASRView:
+    status: str = "idle"  # idle | loading | loaded | listening | recognizing | error
+    model: str = ""
+
+
+@dataclass
+class LLMView:
+    model: str = ""
+    available: bool = False
 
 
 @dataclass
@@ -38,14 +50,13 @@ class UIState:
     paused: bool = False
 
     conversation_mode: str = "passive_listening"
-    llm_model: str = ""
-    llm_available: bool = False
 
     messages: list[ChatMessage] = field(default_factory=list)
     max_visible_messages: int = 8
 
-    latest_gate: GateSnapshot = field(default_factory=GateSnapshot)
-    latest_bubble: str = ""
+    latest_gate: GateView = field(default_factory=GateView)
+    asr: ASRView = field(default_factory=ASRView)
+    llm: LLMView = field(default_factory=LLMView)
 
     mic: MicSnapshot = field(default_factory=MicSnapshot)
 
@@ -68,3 +79,7 @@ class UIState:
     @property
     def visible_messages(self) -> list[ChatMessage]:
         return self.messages[-self.max_visible_messages:]
+
+
+# 向后兼容别名
+GateSnapshot = GateView

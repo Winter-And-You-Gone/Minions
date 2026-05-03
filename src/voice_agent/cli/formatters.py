@@ -30,15 +30,16 @@ def format_header(state: UIState) -> list[tuple[str, str]]:
     """返回顶部状态栏 formatted text。"""
     frags: list[tuple[str, str]] = []
 
-    # Line 1: title + mode + LLM
+    # Line 1: title + mode + ASR + LLM
     frags.append(("bold cyan", " Minions "))
     mode_style = _mode_tag(state)
     frags.append((mode_style, f"[{state.conversation_mode}]"))
-    if state.llm_model:
-        frags.append(("ansibrightblack", f"  LLM: {state.llm_model}"))
+    if state.asr.status != "idle":
+        frags.append(("ansibrightblack", f"  ASR: {state.asr.status}"))
+    if state.llm.model:
+        frags.append(("ansibrightblack", f"  LLM: {state.llm.model}"))
     if state.paused:
         frags.append(("red", "  [暂停]"))
-    # Pad to end of line
     frags.append(("", "\n"))
 
     # Line 2: mic VU meter
