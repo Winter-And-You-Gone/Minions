@@ -5,7 +5,7 @@
 ## 快速开始
 
 ```bash
-# 安装依赖
+# 安装依赖 & 包
 pip install -e .
 
 # 启动（使用 mock ASR）

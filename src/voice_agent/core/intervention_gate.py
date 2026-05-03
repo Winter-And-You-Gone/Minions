@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 
-from voice_agent.utils.text_normalizer import normalize_text
+from voice_agent.utils.text_normalizer import normalize_text, remove_chinese_spaces
 from voice_agent.core.conversation_state import ConversationState
 
 
@@ -101,7 +101,9 @@ class InterventionGate:
         state: ConversationState,
         asr_confidence: float = 1.0,
     ) -> GateResult:
-        text = normalize_text(raw_text)
+        # Gate 专用：移除 ASR 中文字符间空格
+        text = remove_chinese_spaces(raw_text)
+        text = normalize_text(text)
 
         # --- 硬过滤 ---
         hard_filter_result = self._hard_filter(text, state, asr_confidence)
@@ -156,11 +158,24 @@ class InterventionGate:
         if state.is_paused():
             return GateResult(GateAction.SILENT, 0, "已暂停")
 
-        # 冷却中
+        # 冷却中 — 强触发词或明确问题可绕过
         if state.is_in_cooldown():
-            return GateResult(GateAction.SILENT, 0, "冷却中")
+            if not self._has_bypass_trigger(text):
+                return GateResult(GateAction.SILENT, 0, "冷却中")
 
         return None
+
+    def _has_bypass_trigger(self, text: str) -> bool:
+        """检查文本是否包含可绕过冷却的强触发词、问题触发词或问号结尾。"""
+        for word in STRONG_TRIGGERS:
+            if word in text:
+                return True
+        for word in QUESTION_TRIGGERS:
+            if word in text:
+                return True
+        if text.endswith("?"):
+            return True
+        return False
 
     def _rule_score(self, text: str, _state: ConversationState) -> tuple[int, list[str]]:
         """规则打分。"""
@@ -191,7 +206,7 @@ class InterventionGate:
                     break
 
         # 句尾问号
-        if text.endswith("?") or text.endswith("?"):
+        if text.endswith("?"):
             score += QUESTION_MARK_SCORE
             reasons.append("句尾问号")
 

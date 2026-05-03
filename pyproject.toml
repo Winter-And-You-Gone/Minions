@@ -6,9 +6,23 @@ build-backend = "setuptools.build_meta"
 name = "voice-agent"
 version = "0.1.0"
 description = "常驻语音 Agent MVP"
+dependencies = [
+    "sounddevice",
+    "numpy",
+    "pyyaml",
+    "python-dotenv",
+    "httpx",
+    "websockets",
+    "rich",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]

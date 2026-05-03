@@ -40,6 +40,7 @@ def build_llm(config: dict) -> LLMClient:
         api_key=lc.get("api_key", ""),
         model=lc.get("model", ""),
         timeout_seconds=lc.get("timeout_seconds", 30),
+        mock_judge_reply=lc.get("mock_judge_reply", False),
     )
 
 

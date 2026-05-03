@@ -5,6 +5,8 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import Any
 
+from voice_agent.logger import get_logger
+
 Callback = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
 
@@ -13,6 +15,7 @@ class EventBus:
 
     def __init__(self) -> None:
         self._subscribers: list[Callback] = []
+        self._logger = get_logger()
 
     def subscribe(self, callback: Callback) -> None:
         self._subscribers.append(callback)
@@ -27,8 +30,16 @@ class EventBus:
         results = []
         for cb in self._subscribers:
             results.append(cb(event))
-        # 允许订阅者同步或异步
-        await asyncio.gather(*[r if asyncio.iscoroutine(r) else _noop(r) for r in results], return_exceptions=True)
+        # 收集所有结果并记录异常
+        outcomes = await asyncio.gather(
+            *[r if asyncio.iscoroutine(r) else _noop(r) for r in results],
+            return_exceptions=True,
+        )
+        for cb, outcome in zip(self._subscribers, outcomes):
+            if isinstance(outcome, Exception):
+                self._logger.error(
+                    "[EventBus] subscriber %s 异常: %s", getattr(cb, "__name__", str(cb)), outcome
+                )
 
 
 async def _noop(_result: Any) -> None:

@@ -19,6 +19,7 @@ class WebSocketServer:
         self._server = None
         self._logger = get_logger()
         self._event_queue: asyncio.Queue = asyncio.Queue()
+        self._broadcast_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         self._server = await serve(
@@ -26,10 +27,13 @@ class WebSocketServer:
             self._host,
             self._port,
         )
-        asyncio.create_task(self._broadcast_loop())
+        self._broadcast_task = asyncio.create_task(self._broadcast_loop())
         self._logger.info("[WebSocket] 已启动 ws://%s:%s", self._host, self._port)
 
     async def stop(self) -> None:
+        if self._broadcast_task:
+            self._broadcast_task.cancel()
+            self._broadcast_task = None
         if self._server:
             self._server.close()
             await self._server.wait_closed()
@@ -50,7 +54,10 @@ class WebSocketServer:
 
     async def _broadcast_loop(self) -> None:
         while True:
-            event = await self._event_queue.get()
+            try:
+                event = await self._event_queue.get()
+            except asyncio.CancelledError:
+                break
             payload = json.dumps(event, ensure_ascii=False)
             if self._clients:
                 disconnected = set()

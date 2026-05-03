@@ -1,5 +1,7 @@
 """测试介入判断器。"""
 
+import time
+
 import pytest
 from voice_agent.core.conversation_state import ConversationState
 from voice_agent.core.intervention_gate import InterventionGate, GateAction
@@ -16,6 +18,14 @@ def make_active_state() -> ConversationState:
     state.mode = "active_chat"
     state.last_agent_reply_at = __import__("time").time()
     state.active_until = __import__("time").time() + 60
+    return state
+
+
+def make_cooldown_state() -> ConversationState:
+    """创建处于冷却中的状态（有 active_chat 背景）。"""
+    state = ConversationState(_cooldown_seconds=60)
+    state.mark_agent_replied()
+    state.enter_cooldown()
     return state
 
 
@@ -127,6 +137,65 @@ def test_question_mark_adds_score():
     assert with_q.score >= without_q.score
 
 
+# --- 中文空格归一化 ——
+
+def test_chinese_spaces_strong_trigger():
+    """带空格的 '帮 我 看 一 下' 应归一化后匹配强触发词。"""
+    gate = InterventionGate()
+    result = gate.evaluate("帮 我 看 一 下", make_state())
+    assert result.action == GateAction.AGENT
+
+
+def test_chinese_spaces_question_trigger():
+    """带空格的 '什么 意思' 应归一化后匹配问题触发词。"""
+    gate = InterventionGate()
+    result = gate.evaluate("什么 意思", make_state())
+    assert result.action == GateAction.AGENT
+
+
+def test_chinese_spaces_need_help():
+    gate = InterventionGate()
+    result = gate.evaluate("帮 我 查 一 下 这 个 错 误", make_state())
+    assert result.action == GateAction.AGENT
+
+
+# --- 冷却绕过 ---
+
+def test_cooldown_silent_for_normal_statement():
+    """冷却中普通陈述应 silent。"""
+    gate = InterventionGate()
+    state = make_cooldown_state()
+    result = gate.evaluate("今天天气不错", state)
+    assert result.action == GateAction.SILENT
+
+
+def test_cooldown_bypass_for_strong_trigger():
+    """冷却中强触发词应绕过，仍然允许进入 agent。"""
+    gate = InterventionGate()
+    state = make_cooldown_state()
+    result = gate.evaluate("帮我查一下", state)
+    assert result.action == GateAction.AGENT
+
+
+def test_cooldown_bypass_for_question_trigger():
+    """冷却中明确问题应绕过。"""
+    gate = InterventionGate()
+    state = make_cooldown_state()
+    result = gate.evaluate("这是什么意思", state)
+    assert result.action == GateAction.AGENT
+
+
+def test_cooldown_bypass_for_question_mark():
+    """冷却中以问号结尾可通过。"""
+    gate = InterventionGate()
+    state = make_cooldown_state()
+    result = gate.evaluate("真的吗?", state)
+    # 不含强/问题触发词，但问号加分 20，状态加权 30 = 50 → JUDGE（默认 threshold_agent=60）
+    assert result.action in (GateAction.JUDGE, GateAction.AGENT)
+
+
+# --- 参数化主验收用例 ---
+
 @pytest.mark.parametrize("text,expected_action", [
     ("嗯", GateAction.SILENT),
     ("这个报错是什么意思", GateAction.AGENT),
@@ -134,6 +203,8 @@ def test_question_mark_adds_score():
     ("你觉得这个方案怎么样", GateAction.AGENT),
     ("提醒我等会儿吃饭", GateAction.AGENT),
     ("打开浏览器", GateAction.AGENT),
+    ("帮 我 看 一 下", GateAction.AGENT),
+    ("什么 意思", GateAction.AGENT),
 ])
 def test_main_cases_from_spec(text, expected_action):
     """方案文档中的主要验收用例。"""
