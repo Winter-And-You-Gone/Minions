@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -20,6 +21,7 @@ from voice_agent.logger import get_logger
 from voice_agent.core.agent_core import AgentCore
 from voice_agent.core.conversation_state import ConversationState
 from voice_agent.core.llm_client import LLMClient
+from voice_agent.audio.microphone import Microphone, calculate_rms
 
 _HISTORY_FILE = Path.home() / ".minions_history"
 
@@ -44,7 +46,6 @@ def _list_devices_str() -> str:
 
 
 def _resolve_device(device_arg: str) -> int | str | None:
-    """解析 --device 参数为数字 ID 或字符串。"""
     if device_arg is None:
         return None
     if isinstance(device_arg, str) and device_arg.isdigit():
@@ -53,7 +54,6 @@ def _resolve_device(device_arg: str) -> int | str | None:
 
 
 def _get_mic_info(device_id: int | str | None = None) -> dict:
-    """查询麦克风设备信息，返回带有效性标记的字典。"""
     import sounddevice as sd
 
     did = device_id if device_id is not None else sd.default.device[0]
@@ -70,6 +70,19 @@ def _get_mic_info(device_id: int | str | None = None) -> dict:
         return {"id": did, "name": str(did), "sr": 0, "channels": 0, "valid": False}
 
 
+def _vu_ascii(rms: float, width: int = 30) -> str:
+    """将 RMS 音量转为 ASCII VU 表。"""
+    if rms <= 0:
+        return "░" * width
+    # 用对数刻度更符合听觉：-60dB ~ 0dB 映射到 0 ~ 1
+    db = 20 * math.log10(max(rms, 1e-6))
+    norm = max(0.0, min(1.0, (db + 60) / 60))
+    filled = int(norm * width)
+    filled = max(0, min(filled, width))
+    bar = "█" * filled + "░" * (width - filled)
+    return bar
+
+
 class MinionsShell:
     """交互式 CLI 外壳。
 
@@ -83,17 +96,24 @@ class MinionsShell:
         agent: AgentCore,
         state: ConversationState,
         llm: LLMClient,
+        mic: Microphone | None = None,
     ) -> None:
         self._bus = bus
         self._agent = agent
         self._state = state
         self._llm = llm
+        self._mic = mic
         self._logger = get_logger()
 
         # 状态
         self.running = True
         self._paused = False
         self._mic_device: int | str | None = None
+
+        # 麦克风监测
+        self._mic_monitoring = False
+        self._latest_rms = 0.0
+        self._mic_monitor_task: asyncio.Task | None = None
 
         # 事件队列
         self._event_queue: asyncio.Queue[dict] = asyncio.Queue()
@@ -106,7 +126,6 @@ class MinionsShell:
 
         @kb.add("right")
         def _accept_suggestion(event: object) -> None:
-            """按右键接受 auto-suggest。"""
             buf = self._session.app.current_buffer
             if buf.suggestion:
                 buf.insert_text(buf.suggestion.text)
@@ -134,21 +153,27 @@ class MinionsShell:
     # ---- 启动 ----
 
     async def run(self) -> None:
-        """启动 CLI 主循环（双任务：输入 + 事件显示）。"""
         self._print_welcome()
 
         input_task = asyncio.create_task(self._input_loop())
         event_task = asyncio.create_task(self._event_loop())
 
-        try:
-            done, pending = await asyncio.wait(
-                [input_task, event_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            for task in pending:
-                task.cancel()
-        except asyncio.CancelledError:
-            pass
+        # 收集所有需要并发运行的任务
+        tasks = [input_task, event_task]
+
+        done, pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+
+        # 清理麦克风监测
+        if self._mic_monitor_task:
+            self._mic_monitor_task.cancel()
+            self._mic_monitor_task = None
+        if self._mic_monitoring:
+            self._mic_monitoring = False
+            await self._mic.stop()
 
         self._console.print()
 
@@ -191,6 +216,10 @@ class MinionsShell:
     # ---- 事件渲染 ----
 
     def _render_event(self, etype: str, event: dict) -> None:
+        if etype == "audio.level":
+            self._latest_rms = event.get("rms", 0.0)
+            return  # VU 表在 toolbar 显示，不打印到主区域
+
         renderers = {
             "agent.reply": self._render_agent_reply,
             "gate.result": self._render_gate_result,
@@ -257,8 +286,6 @@ class MinionsShell:
     # ---- 命令自动猜想 ----
 
     class _CommandAutoSuggest(AutoSuggest):
-        """自动猜想命令：输入 /h 淡色显示 /help，右键补全。"""
-
         def __init__(self, commands: dict[str, tuple[str, str]]) -> None:
             self._cmd_list = sorted(commands)
 
@@ -281,6 +308,25 @@ class MinionsShell:
 
             return None
 
+    # ---- 麦克风监测 ----
+
+    async def _mic_monitor_loop(self) -> None:
+        """后台任务：持续采集麦克风并更新 RMS。"""
+        if self._mic is None:
+            return
+        try:
+            await self._mic.start()
+            while self._mic_monitoring and self.running:
+                chunk = await self._mic.read_chunk()
+                rms = calculate_rms(chunk)
+                self._latest_rms = rms
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            self._console.print(Text(f"  ⚠️ 麦克风采集异常: {e}", style="red"))
+        finally:
+            await self._mic.stop()
+
     # ---- 命令处理 ----
 
     COMMANDS: dict[str, tuple[str, str]] = {
@@ -293,7 +339,7 @@ class MinionsShell:
         "/clear": ("清屏", "clear"),
         "/mode": ("查看当前状态", "mode"),
         "/status": ("查看系统状态", "status"),
-        "/mic": ("麦克风管理 (list/select/info)", "mic"),
+        "/mic": ("麦克风管理 (monitor/list/select/info)", "mic"),
     }
 
     async def _dispatch_command(self, raw: str) -> None:
@@ -316,7 +362,6 @@ class MinionsShell:
         table.add_column("命令", style="bold cyan")
         table.add_column("说明", style="white")
 
-        # 去重显示（/h 和 /help 只显示一次）
         seen = set()
         for cmd, (desc, _) in sorted(self.COMMANDS.items()):
             if desc not in seen:
@@ -328,6 +373,10 @@ class MinionsShell:
 
     async def _cmd_exit(self) -> None:
         self.running = False
+        if self._mic_monitor_task:
+            self._mic_monitor_task.cancel()
+            self._mic_monitor_task = None
+        self._mic_monitoring = False
         await self._bus.publish({"type": "command.exit"})
         self._console.print(Text("  ┊ 再见 👋", style="dim"))
 
@@ -352,14 +401,15 @@ class MinionsShell:
     async def _cmd_status(self) -> None:
         mic = _get_mic_info(self._mic_device)
         mic_tag = f"🎤 {mic['name']}" if mic["valid"] else f"⚠️  {mic['name']}（无输入通道）"
+        monitoring = "🎤 监测中" if self._mic_monitoring else "已停止"
 
         self._console.print(Text(f"  模式: {'暂停' if self._paused else '运行'}", style="cyan"))
         self._console.print(Text(f"  LLM 可用: {self._llm.is_available}", style="cyan"))
         self._console.print(Text(f"  状态: {self._state.mode}", style="cyan"))
         self._console.print(Text(f"  麦克风: {mic_tag}", style="cyan"))
+        self._console.print(Text(f"  监测: {monitoring}", style="cyan"))
 
     async def _cmd_mic(self, *args: str) -> None:
-        """处理 /mic 子命令。"""
         sub = args[0] if args else "help"
 
         if sub == "list":
@@ -378,10 +428,27 @@ class MinionsShell:
             self._console.print(Text(f"  采样率: {mic['sr']:.0f} Hz", style="dim"))
             self._console.print(Text(f"  输入通道: {mic['channels']}", style="dim"))
 
+        elif sub == "monitor":
+            if self._mic is None:
+                self._console.print(Text("  ❌ 未配置麦克风，启动时未传入 mic 参数", style="red"))
+                return
+
+            self._mic_monitoring = not self._mic_monitoring
+            if self._mic_monitoring:
+                self._mic_monitor_task = asyncio.create_task(self._mic_monitor_loop())
+                self._console.print(Text("  🎤 麦克风监测已启动 — 底栏会显示实时音量", style="green"))
+            else:
+                if self._mic_monitor_task:
+                    self._mic_monitor_task.cancel()
+                    self._mic_monitor_task = None
+                self._latest_rms = 0.0
+                self._console.print(Text("  🎤 麦克风监测已停止", style="dim"))
+
         else:
             table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
             table.add_column("子命令", style="bold cyan")
             table.add_column("说明", style="white")
+            table.add_row("/mic monitor", "切换麦克风实时监测（底栏 VU 表）")
             table.add_row("/mic list", "列出所有音频设备")
             table.add_row("/mic select <id|名称>", "选择麦克风设备")
             table.add_row("/mic info", "查看当前麦克风信息")
@@ -390,16 +457,24 @@ class MinionsShell:
     # ---- 工具栏 ----
 
     def _toolbar(self) -> str:
+        parts = []
+
+        # VU 表（监测中）
+        if self._mic_monitoring:
+            bar = _vu_ascii(self._latest_rms)
+            parts.append(f" 🎤{bar} {self._latest_rms:.4f} ")
+
+        # 状态指示
         if self._paused:
-            return " [red]已暂停[/red]  输入 /resume 恢复"
-        return " [dim]输入 /help 查看命令 | → 补全建议 | ↑↓ 历史[/dim]"
+            parts.append("[red]已暂停[/red]  输入 /resume 恢复")
+        else:
+            parts.append("[dim]输入 /help 查看命令 | → 补全建议 | ↑↓ 历史[/dim]")
+
+        return " |".join(parts)
 
     # ---- 欢迎信息 ----
 
     def _print_welcome(self) -> None:
-        import sounddevice as sd
-
-        # 检测默认麦克风
         mic = _get_mic_info()
         mic_status = f"🎤 {mic['name']}" if mic["valid"] else "⚠️  未检测到有效麦克风"
 
@@ -409,6 +484,7 @@ class MinionsShell:
                 "Minions — 常驻语音 Agent  CLI",
                 "",
                 f"  {mic_status}",
+                "  输入 /mic monitor 启动实时音频监测",
                 "直接输入文字与 AI 对话，或输入 /help 查看命令",
             ])),
             title="[bold cyan]Minions[/]",

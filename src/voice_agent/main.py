@@ -208,6 +208,15 @@ async def run_cli(config_path: str) -> None:
     llm = build_llm(config)
     agent = AgentCore(bus, state, gate, llm)
 
+    # 麦克风（可选，用于 VU 监测）
+    ac = config.get("audio", {})
+    mic = Microphone(
+        sample_rate=ac.get("sample_rate", 16000),
+        channels=ac.get("channels", 1),
+        chunk_ms=ac.get("chunk_ms", 100),
+        device=ac.get("device"),
+    )
+
     # 桥接 asr.final → AgentCore
     async def on_asr_final(event: dict) -> None:
         if event.get("type") == "asr.final":
@@ -230,7 +239,7 @@ async def run_cli(config_path: str) -> None:
     bus.subscribe(on_command)
 
     # 交互式外壳
-    shell = MinionsShell(bus, agent, state, llm)
+    shell = MinionsShell(bus, agent, state, llm, mic=mic)
     shell.subscribe()
 
     llm_mode = "真实调用" if llm.is_available else "mock 模式"
