@@ -17,9 +17,9 @@ asr:
     enabled: false
 
     # offline recognizer 模型路径
-    model_dir: "./models/sherpa-onnx"
-    tokens: ""
-    model: ""
+    model_dir: "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
+    tokens: "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt"
+    model: "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx"
 
     # 可选：transducer 类模型需要 encoder/decoder/joiner
     encoder: ""

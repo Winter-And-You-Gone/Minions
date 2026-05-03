@@ -24,3 +24,9 @@ __pycache__/
 
 # Logs
 *.log
+
+# ASR models (download separately)
+/models/
+*.onnx
+*.tar.bz2
+*.tar.gz

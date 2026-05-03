@@ -50,7 +50,7 @@ class SherpaOnnxASR:
                 "  pip install sherpa-onnx"
             )
             self._logger.error("[SherpaOnnxASR] %s", msg)
-            print(f"  ❌ {msg}", flush=True)
+            print(f"  [ASR] 错误: {msg}", flush=True)
             raise RuntimeError("sherpa-onnx 未安装")
 
         # 2) 校验配置
@@ -85,7 +85,7 @@ class SherpaOnnxASR:
         # 6) 启动主循环
         self._running = True
         self._logger.info("[SherpaOnnxASR] 启动成功，等待语音输入...")
-        print("  🎤 [ASR] 已启动，请说话...", flush=True)
+        print("  [ASR] 已启动，请说话...", flush=True)
 
         try:
             await self._mic.start()
@@ -94,7 +94,7 @@ class SherpaOnnxASR:
             self._logger.info("[SherpaOnnxASR] 被取消")
         except Exception as e:
             self._logger.error("[SherpaOnnxASR] 运行错误: %s", e)
-            print(f"  ❌ [ASR] 运行错误: {e}", flush=True)
+            print(f"  [ASR] 运行错误: {e}", flush=True)
         finally:
             await self._mic.stop()
             self._running = False
@@ -158,54 +158,62 @@ class SherpaOnnxASR:
         decoding_method = self._config.get("decoding_method", "greedy_search")
         provider = self._config.get("provider", "cpu")
 
-        # 构建离线模型配置
-        if model:
-            # SenseVoice / Paraformer 等单模型
-            feat_config = sherpa_onnx.OfflineModelConfig(
-                tokens=tokens,
-                num_threads=num_threads,
-                provider=provider,
-            )
-            # 尝试多种模型类型
-            model_path = str(Path(model).resolve())
-            if "sensevoice" in model.lower() or "sensvoice" in model.lower():
-                feat_config.sense_voice = sherpa_onnx.OfflineSenseVoiceModelConfig(
-                    model=model_path,
-                )
-            elif "paraformer" in model.lower():
-                feat_config.paraformer = sherpa_onnx.OfflineParaformerModelConfig(
-                    model=model_path,
-                )
-            elif "whisper" in model.lower():
-                feat_config.whisper = sherpa_onnx.OfflineWhisperModelConfig(
-                    model=model_path,
-                )
-            elif "nemo" in model.lower() or "neMo" in model:
-                feat_config.nemo_ctc = sherpa_onnx.OfflineNemoEncDecModelConfig(
-                    model=model_path,
-                )
-            else:
-                # 默认尝试 Paraformer
-                feat_config.paraformer = sherpa_onnx.OfflineParaformerModelConfig(
-                    model=model_path,
-                )
-        else:
-            # Transducer 模型
-            feat_config = sherpa_onnx.OfflineModelConfig(
-                transducer=sherpa_onnx.OfflineTransducerModelConfig(
-                    encoder=str(Path(encoder).resolve()),
-                    decoder=str(Path(decoder).resolve()),
-                    joiner=str(Path(joiner).resolve()),
-                ),
-                tokens=tokens,
-                num_threads=num_threads,
-                provider=provider,
-            )
+        model_path = str(Path(model).resolve()) if model else ""
 
-        recognizer_config = sherpa_onnx.OfflineRecognizerConfig(
-            model=feat_config,
-            decoding_method=decoding_method,
-        )
+        # 根据模型名称自动选择工厂方法
+        if model_path and ("sensevoice" in model.lower() or "sense_voice" in model.lower() or "sense-voice" in model.lower()):
+            recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                model=model_path,
+                tokens=str(Path(tokens).resolve()),
+                num_threads=num_threads,
+                provider=provider,
+                language="zh",
+                use_itn=True,
+            )
+        elif model_path and "paraformer" in model.lower():
+            recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+                paraformer=model_path,
+                tokens=str(Path(tokens).resolve()),
+                num_threads=num_threads,
+                provider=provider,
+            )
+        elif model_path and "whisper" in model.lower():
+            recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
+                encoder=model_path,
+                decoder="",  # whisper 需要用单独的 encoder/decoder
+                tokens=str(Path(tokens).resolve()),
+                num_threads=num_threads,
+                provider=provider,
+            )
+        elif model_path:
+            # 默认尝试 SenseVoice（最通用的多语言模型）
+            try:
+                recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                    model=model_path,
+                    tokens=str(Path(tokens).resolve()),
+                    num_threads=num_threads,
+                    provider=provider,
+                    language="zh",
+                    use_itn=True,
+                )
+            except Exception:
+                recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+                    paraformer=model_path,
+                    tokens=str(Path(tokens).resolve()),
+                    num_threads=num_threads,
+                    provider=provider,
+                )
+        elif encoder and decoder and joiner:
+            recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+                encoder=str(Path(encoder).resolve()),
+                decoder=str(Path(decoder).resolve()),
+                joiner=str(Path(joiner).resolve()),
+                tokens=str(Path(tokens).resolve()),
+                num_threads=num_threads,
+                provider=provider,
+            )
+        else:
+            raise ValueError("无法创建 recognizer: 不支持的模型配置")
 
         self._logger.info(
             "[SherpaOnnxASR] 创建 recognizer: model=%s tokens=%s threads=%d method=%s",
@@ -214,7 +222,7 @@ class SherpaOnnxASR:
             num_threads,
             decoding_method,
         )
-        return sherpa_onnx.OfflineRecognizer(recognizer_config)
+        return recognizer
 
     async def _run_loop(self, sample_rate: int) -> None:
         """主循环: 读麦克风 → 分段 → 识别。"""

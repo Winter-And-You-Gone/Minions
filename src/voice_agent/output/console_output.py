@@ -72,5 +72,5 @@ async def handle_console_output(event: dict) -> None:
     elif etype == "audio.level":
         rms = event.get("rms", 0.0)
         bar_len = min(int(rms * 200), 40)
-        bar = "█" * bar_len + "░" * (40 - bar_len)
+        bar = "#" * bar_len + "." * (40 - bar_len)
         _CONSOLE.print(Text(f"  [Audio] rms={rms:.4f}  |{bar}|", style="dim"))

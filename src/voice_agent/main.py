@@ -261,6 +261,13 @@ async def run_cli(config_path: str) -> None:
 
 
 def main() -> None:
+    # Windows 控制台 UTF-8 支持
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(description="voice-agent: 常驻语音 Agent")
     parser.add_argument("--config", default="config.yaml", help="配置文件路径 (默认: config.yaml)")
     parser.add_argument("--asr", default=None, help="ASR 引擎覆盖 (mock / sherpa-onnx)")
