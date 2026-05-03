@@ -1,0 +1,23 @@
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+
+# Build outputs
+dist/
+build/
+node_modules/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Environment
+.env
+.env.local
+*.local
+
+# Logs
+*.log
