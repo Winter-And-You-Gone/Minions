@@ -11,15 +11,44 @@ audio:
 asr:
   engine: "mock"
   language: "zh"
-  mode: "streaming"
+  mode: "offline-vad"
 
   sherpa_onnx:
     enabled: false
+
+    # offline recognizer 模型路径
     model_dir: "./models/sherpa-onnx"
     tokens: ""
+    model: ""
+
+    # 可选：transducer 类模型需要 encoder/decoder/joiner
     encoder: ""
     decoder: ""
     joiner: ""
+
+    # 解码配置
+    num_threads: 2
+    decoding_method: "greedy_search"
+    provider: "cpu"
+
+    # 音频配置（回退到顶层 audio）
+    sample_rate: 16000
+    channels: 1
+    chunk_ms: 100
+
+    # 简单 VAD 分段配置
+    vad:
+      enabled: true
+      rms_threshold: 0.008
+      min_speech_ms: 300
+      max_speech_ms: 15000
+      silence_timeout_ms: 800
+      pre_roll_ms: 300
+
+    # 识别结果过滤
+    result:
+      min_text_length: 1
+      ignore_empty: true
 
 intervention:
   min_text_length: 4

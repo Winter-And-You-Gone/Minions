@@ -27,3 +27,6 @@ where = ["src"]
 dev = [
     "pytest",
 ]
+asr = [
+    "sherpa-onnx",
+]

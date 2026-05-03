@@ -50,7 +50,15 @@ def build_asr(engine_name: str, event_bus: EventBus, config: dict) -> MockASR | 
     if engine_name == "mock":
         return MockASR(event_bus)
     if engine_name == "sherpa-onnx":
-        return SherpaOnnxASR(event_bus, config.get("asr", {}).get("sherpa_onnx", {}))
+        # 合并 audio 顶层配置 + sherpa_onnx 子配置，使 sherpa_onnx 能继承 sample_rate 等
+        asr_section = config.get("asr", {})
+        asr_config = asr_section.get("sherpa_onnx", {})
+        audio_config = config.get("audio", {})
+        merged = {**audio_config, **asr_config}
+        # 保留嵌套的 vad 子配置
+        if "vad" in asr_config:
+            merged["vad"] = asr_config["vad"]
+        return SherpaOnnxASR(event_bus, merged)
     raise ValueError(f"不支持的 ASR 引擎: {engine_name}")
 
 

@@ -24,6 +24,19 @@ async def handle_console_output(event: dict) -> None:
         text = event.get("text", "")
         _CONSOLE.print(Text(f"  [partial] {text}", style=style), end="\r")
 
+    elif etype == "asr.speech_start":
+        _CONSOLE.print(Text("  [ASR] 检测到语音开始", style="bold cyan"))
+
+    elif etype == "asr.speech_end":
+        dur = event.get("duration_ms", 0)
+        forced = event.get("forced", False)
+        tag = "（强制截断）" if forced else ""
+        _CONSOLE.print(Text(f"  [ASR] 语音结束 duration={dur}ms{tag}，开始识别...", style="cyan"))
+
+    elif etype == "asr.error":
+        msg = event.get("message", "")
+        _CONSOLE.print(Text(f"  [ASR] 错误: {msg}", style="bold red"))
+
     elif etype == "asr.final":
         text = event.get("text", "")
         conf = event.get("confidence", 1.0)
