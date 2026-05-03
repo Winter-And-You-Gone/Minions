@@ -109,6 +109,21 @@ class AgentCore:
         })
         self._logger.info("[Agent] reply=%s", reply)
 
+    @staticmethod
+    def _is_model_info_question(text: str) -> bool:
+        """判断用户是否在询问当前模型信息。
+
+        这类问题由本地配置直接回答，不让 LLM 自己猜。
+        """
+        keywords = [
+            "你是什么模型",
+            "你用的什么模型",
+            "当前模型",
+            "模型名",
+            "你是谁家的模型",
+        ]
+        return any(k in text for k in keywords)
+
     async def handle_pause(self) -> None:
         self._state.pause()
         await self._bus.publish({
