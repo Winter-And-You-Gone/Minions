@@ -83,6 +83,24 @@ def _vu_ascii(rms: float, width: int = 30) -> str:
     return bar
 
 
+def _probe_device_rms(device_id: int, sample_rate: int = 16000, duration: float = 0.3) -> float:
+    """快速探测指定设备的音频输入音量，返回 RMS，失败返回 -1。"""
+    import sounddevice as sd
+
+    try:
+        recording = sd.rec(
+            int(duration * sample_rate),
+            samplerate=sample_rate,
+            channels=1,
+            device=device_id,
+            dtype="float32",
+        )
+        sd.wait()
+        return calculate_rms(recording)
+    except Exception:
+        return -1.0
+
+
 class MinionsShell:
     """交互式 CLI 外壳。
 
@@ -444,15 +462,87 @@ class MinionsShell:
                 self._latest_rms = 0.0
                 self._console.print(Text("  🎤 麦克风监测已停止", style="dim"))
 
+        elif sub == "autodetect":
+            await self._cmd_mic_autodetect(*args)
+
         else:
             table = Table(box=box.SIMPLE, show_header=False, padding=(0, 2))
             table.add_column("子命令", style="bold cyan")
             table.add_column("说明", style="white")
             table.add_row("/mic monitor", "切换麦克风实时监测（底栏 VU 表）")
+            table.add_row("/mic autodetect", "自动检测有音频输入的麦克风")
+            table.add_row("/mic autodetect --select", "自动检测并切换到最佳设备")
             table.add_row("/mic list", "列出所有音频设备")
             table.add_row("/mic select <id|名称>", "选择麦克风设备")
             table.add_row("/mic info", "查看当前麦克风信息")
             self._console.print(table)
+
+    async def _cmd_mic_autodetect(self, *args: str) -> None:
+        """自动检测所有输入设备的音频音量，选出最佳麦克风。"""
+        import sounddevice as sd
+
+        self._console.print(Text("  🔍 正在逐个探测麦克风设备（每设备 300ms）...", style="bold cyan"))
+
+        loop = asyncio.get_running_loop()
+        devices = sd.query_devices()
+        results: list[tuple[int, str, float]] = []
+
+        for i, dev in enumerate(devices):
+            if dev["max_input_channels"] <= 0:
+                continue
+
+            self._console.print(Text(f"    探测 [{i}] {dev['name']} ... ", style="dim"), end="")
+            rms = await loop.run_in_executor(None, _probe_device_rms, i, 16000, 0.3)
+            results.append((i, dev["name"], rms))
+            if rms >= 0:
+                bar = _vu_ascii(rms, 15)
+                db = 20 * math.log10(max(rms, 1e-6))
+                self._console.print(Text(f"{bar}  {rms:.6f}  ({db:.0f} dB)", style="green" if rms > 0.005 else "dim"))
+            else:
+                self._console.print(Text("❌ 打开失败", style="red"))
+
+        results.sort(key=lambda x: x[2], reverse=True)
+
+        self._console.print()
+        table = Table(box=box.SIMPLE, show_header=True, padding=(0, 2))
+        table.add_column("排名", style="bold", justify="right")
+        table.add_column("设备", style="cyan")
+        table.add_column("RMS", style="white", justify="right")
+        table.add_column("音量条", style="white")
+        for rank, (did, name, rms) in enumerate(results, 1):
+            bar = _vu_ascii(rms, 20)
+            rms_str = f"{rms:.6f}" if rms >= 0 else "❌"
+            style = "green" if rank == 1 else "dim"
+            table.add_row(f"#{rank}", f"[{did}] {name}", rms_str, bar)
+        self._console.print(table)
+
+        # 自动选择
+        auto_select = "--select" in args or "-s" in args
+        if results and results[0][2] > 0.005:
+            best_id, best_name, best_rms = results[0]
+            if auto_select:
+                self._mic_device = best_id
+                self._console.print(Text(f"  ✅ 已选择最佳设备: [{best_id}] {best_name}", style="bold green"))
+                # 如果正在监测，切换到新设备
+                if self._mic_monitoring and self._mic is not None:
+                    self._console.print(Text("  正在重启麦克风监测使用新设备...", style="dim"))
+                    if self._mic_monitor_task:
+                        self._mic_monitor_task.cancel()
+                        try:
+                            await self._mic_monitor_task
+                        except asyncio.CancelledError:
+                            pass
+                        self._mic_monitor_task = None
+                    await self._mic.stop()
+                    self._mic.device = best_id
+                    self._mic_monitor_task = asyncio.create_task(self._mic_monitor_loop())
+                    self._console.print(Text("  ✅ 监测已切换到新设备", style="green"))
+            else:
+                self._console.print(Text(f"  提示: 添加 --select 自动选择 [{best_id}] {best_name}", style="dim"))
+        elif results and results[0][2] > 0:
+            self._console.print(Text("  ⚠️ 所有设备音量极低，未自动选择", style="yellow"))
+        else:
+            self._console.print(Text("  ⚠️ 未检测到可用的麦克风设备", style="yellow"))
 
     # ---- 工具栏 ----
 
