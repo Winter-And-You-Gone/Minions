@@ -1,6 +1,7 @@
 app:
-  name: "voice-agent"
+  name: "Minions"
   debug: true
+  default_mode: "tui"
 
 audio:
   sample_rate: 16000
@@ -9,12 +10,12 @@ audio:
   device: 1
 
 asr:
-  engine: "mock"
+  engine: "sherpa-onnx"
   language: "zh"
   mode: "offline-vad"
 
   sherpa_onnx:
-    enabled: false
+    enabled: true
 
     # 模型类型（sense_voice / paraformer / whisper / transducer）
     # 留空时根据 model 文件名自动检测

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import math
 import time
 from pathlib import Path
 
@@ -14,12 +13,18 @@ from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 
-from voice_agent.cli.formatters import format_chat, format_decision, format_header, vu_bar
+from voice_agent.cli.formatters import format_chat, vu_bar
 from voice_agent.cli.shell import (
     _get_mic_info,
     _list_devices_str,
     _probe_device_rms,
     _resolve_device,
+)
+from voice_agent.cli.tui_renderer import (
+    format_chat_panel,
+    format_input_prompt,
+    format_side_panel,
+    format_top_bar,
 )
 from voice_agent.cli.ui_state import GateView, LLMView, UIState
 from voice_agent.core.agent_core import AgentCore
@@ -49,6 +54,8 @@ class DynamicMinionsShell:
         llm: LLMClient,
         mic: Microphone | None = None,
         asr_engine: object | None = None,
+        health_report: object | None = None,
+        runtime_info: dict | None = None,
     ) -> None:
         self._bus = bus
         self._agent = agent
@@ -56,6 +63,7 @@ class DynamicMinionsShell:
         self._llm = llm
         self._mic = mic
         self._asr_engine = asr_engine
+        self._health_report = health_report
         self._logger = get_logger()
 
         # 状态
@@ -65,6 +73,19 @@ class DynamicMinionsShell:
                 available=llm.is_available,
             ),
         )
+
+        # runtime_info 注入
+        if runtime_info:
+            self.ui.asr_engine = runtime_info.get("asr_engine", "sherpa-onnx")
+            self.ui.judge_provider = runtime_info.get("judge_provider", "local")
+            self.ui.judge_model = runtime_info.get("judge_model", "qwen3.5:4b")
+            self.ui.llm_model = runtime_info.get("llm_model", "")
+            self.ui.assistant_name = runtime_info.get("assistant_name", "琉璃川")
+
+        # 健康检查注入
+        if health_report:
+            self.ui.health_items = health_report.items if hasattr(health_report, "items") else []
+
         self._mic_device: int | str | None = None
         self._mic_monitoring = False
         self._mic_monitor_task: asyncio.Task | None = None
@@ -81,34 +102,54 @@ class DynamicMinionsShell:
         self._build_ui()
 
         # 欢迎信息
-        self.ui.add_system_message("Minions — 常驻语音 Agent CLI")
+        self.ui.add_system_message("Minions — 常驻语音 Agent")
         self.ui.add_system_message("输入 /help 查看命令，直接输入文字与 AI 对话")
+
+        # ASR 不可用提示
+        if asr_engine is None:
+            self.ui.add_notification("ASR 模型文件不存在，语音识别未启动，但可以键盘输入")
+            self.ui.add_system_message("ASR 模型文件不存在，语音识别未启动，但可以键盘输入")
 
     # ------------------------------------------------------------------
     # UI 构建
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        header_win = Window(
-            FormattedTextControl(lambda: format_header(self.ui)),
-            height=2,
+        # 顶部状态栏
+        top_bar = Window(
+            FormattedTextControl(lambda: format_top_bar(self.ui)),
+            height=1,
         )
 
+        separator_top = Window(height=1, char="─")
+
+        # 左侧聊天区
         self._chat_win = Window(
-            FormattedTextControl(lambda: format_chat(self.ui)),
+            FormattedTextControl(lambda: format_chat_panel(self.ui)),
             wrap_lines=True,
             always_hide_cursor=True,
         )
 
-        decision_win = Window(
-            FormattedTextControl(lambda: format_decision(self.ui)),
-            height=1,
+        # 右侧状态面板
+        side_panel = Window(
+            FormattedTextControl(lambda: format_side_panel(self.ui)),
+            width=40,
+            wrap_lines=True,
+            always_hide_cursor=True,
         )
 
-        # 输入行: "你[普通] > "
+        body = VSplit([
+            self._chat_win,
+            Window(width=1, char="│"),
+            side_panel,
+        ])
+
+        separator_bottom = Window(height=1, char="─")
+
+        # 底部输入行
         input_prompt = Window(
-            FormattedTextControl(lambda: self._input_prompt_text()),
-            width=12,
+            FormattedTextControl(lambda: format_input_prompt(self.ui)),
+            width=18,
             height=1,
             dont_extend_width=True,
         )
@@ -119,9 +160,10 @@ class DynamicMinionsShell:
         input_row = VSplit([input_prompt, self._input_window])
 
         root = HSplit([
-            header_win,
-            self._chat_win,
-            decision_win,
+            top_bar,
+            separator_top,
+            body,
+            separator_bottom,
             input_row,
         ])
 
@@ -135,14 +177,7 @@ class DynamicMinionsShell:
             mouse_support=False,
         )
         self._app.bottom_toolbar = lambda: [
-            ("ansibrightblack", " /help /status /model /pause /resume /clear /exit /mic "),
-        ]
-
-    def _input_prompt_text(self) -> list[tuple[str, str]]:
-        mode = "暂停" if self.ui.paused else "普通"
-        return [
-            ("bold cyan", "你"),
-            ("", f"[{mode}] > "),
+            ("ansibrightblack", " /help /status /debug /mic /pause /resume /clear /exit "),
         ]
 
     def _build_key_bindings(self) -> None:
@@ -167,7 +202,7 @@ class DynamicMinionsShell:
             self._input_buffer.history_forward()
 
     # ------------------------------------------------------------------
-    # 事件订阅
+    # 事件订阅 — 仅更新 UIState，不污染主聊天区
     # ------------------------------------------------------------------
 
     async def on_event(self, event: dict) -> None:
@@ -196,60 +231,55 @@ class DynamicMinionsShell:
         elif etype == "state.change":
             self.ui.conversation_mode = event.get("state", "")
 
-        elif etype == "bubble":
-            msg = event.get("message", "")
-            if msg:
-                self.ui.add_system_message(f"[Bubble] {msg}")
-
         elif etype == "asr.speech_start":
-            self.ui.add_system_message("检测到语音开始...")
+            self.ui.asr.status = "listening"
+            self.ui.add_notification("检测到语音开始")
 
         elif etype == "asr.speech_end":
             dur = event.get("duration_ms", 0)
-            forced = event.get("forced", False)
-            tag = "（强制截断）" if forced else ""
-            self.ui.add_system_message(f"语音结束 ({dur}ms{tag})，识别中...")
+            self.ui.asr.status = "recognizing"
+            self.ui.add_notification(f"语音结束 ({dur}ms)，识别中...")
 
         elif etype == "asr.final" and event.get("source") != "cli":
+            self.ui.asr.status = "recognized"
             self.ui.add_user_message(event.get("text", ""))
+            self.ui.add_notification("识别完成")
             self._scroll_to_bottom()
 
         elif etype == "asr.error":
             self.ui.asr.status = "error"
-            self.ui.add_system_message(f"ASR 错误: {event.get('message', '')}")
+            msg = event.get("message", "")
+            if msg:
+                self.ui.add_notification(f"ASR 错误: {msg}")
 
         elif etype == "asr.status":
             self.ui.asr.status = event.get("status", "idle")
             if event.get("model"):
                 self.ui.asr.model = event["model"]
 
+        elif etype == "judge.result":
+            self.ui.latest_judge_provider = event.get("provider", "")
+            self.ui.latest_judge_target = event.get("target", "")
+            self.ui.latest_judge_should_reply = event.get("should_reply", False)
+            self.ui.latest_judge_confidence = event.get("confidence", 0.0)
+            self.ui.latest_judge_reason = event.get("reason", "")
+
         elif etype == "system":
             msg = event.get("message", "")
             if msg:
-                self.ui.add_system_message(msg)
+                self.ui.add_notification(msg)
 
-        elif etype == "judge.result":
-            provider = event.get("provider", "")
-            should_reply = event.get("should_reply", False)
-            reason = event.get("reason", "")
-            confidence = event.get("confidence", 0.0)
-            self.ui.status_line = (
-                f"Judge[{provider}]: "
-                f"{'reply' if should_reply else 'silent'} "
-                f"conf={confidence:.2f} {reason}"
-            )
-            self._app.invalidate()
-            return
-
-        # 更新唤醒会话状态栏
-        if hasattr(self._state, "is_wake_session_active") and self._state.is_wake_session_active():
-            remain = self._state.seconds_until_wake_session_timeout()
-            wake_name = self._state.wake_name or "唤醒"
-            self.ui.status_line = f"{wake_name} 唤醒会话中，剩余 {remain:.0f}s"
-        else:
-            self.ui.status_line = ""
-
+        # 每次事件后刷新唤醒会话状态
+        self._refresh_wake_state()
         self._app.invalidate()
+
+    def _refresh_wake_state(self) -> None:
+        if hasattr(self._state, "is_wake_session_active") and self._state.is_wake_session_active():
+            self.ui.wake_active = True
+            self.ui.wake_remaining_seconds = self._state.seconds_until_wake_session_timeout()
+        else:
+            self.ui.wake_active = False
+            self.ui.wake_remaining_seconds = 0.0
 
     def subscribe(self) -> None:
         self._bus.subscribe(self.on_event)
@@ -338,6 +368,7 @@ class DynamicMinionsShell:
         "/mode": ("查看当前状态", "mode"),
         "/status": ("查看系统状态", "status"),
         "/model": ("查看当前 LLM 模型", "model"),
+        "/debug": ("显示最近内部事件", "debug"),
         "/mic": ("麦克风管理", "mic"),
         "/name": ("设置或查看 AI 名字", "name"),
         "/名字": ("设置或查看 AI 名字", "name"),
@@ -368,6 +399,30 @@ class DynamicMinionsShell:
                 lines.append(f"  {cmd:<12s} {desc}")
             else:
                 lines.append(f"  {cmd:<12s}  ")
+        self.ui.add_system_message("\n".join(lines))
+        self._app.invalidate()
+
+    async def _cmd_debug(self) -> None:
+        g = self.ui.latest_gate
+        lines = ["── Debug ──"]
+        lines.append(f"Gate: {g.action} score={g.score} reason={g.reason}")
+        lines.append(
+            f"Judge: provider={self.ui.latest_judge_provider} "
+            f"target={self.ui.latest_judge_target} "
+            f"reply={self.ui.latest_judge_should_reply} "
+            f"conf={self.ui.latest_judge_confidence:.2f}"
+        )
+        lines.append(f"ASR: status={self.ui.asr.status} model={self.ui.asr.model}")
+        lines.append(f"Mode: {self.ui.conversation_mode}")
+        lines.append(f"Wake: active={self.ui.wake_active} remain={self.ui.wake_remaining_seconds:.0f}s")
+        lines.append(f"Notices: {len(self.ui.notifications)}")
+        if self.ui.health_items:
+            for item in self.ui.health_items:
+                name = getattr(item, "name", "?")
+                ok = getattr(item, "ok", False)
+                level = getattr(item, "level", "info")
+                status = "✓" if ok else ("✗" if level == "error" else "!")
+                lines.append(f"  Health {status} {name}")
         self.ui.add_system_message("\n".join(lines))
         self._app.invalidate()
 
@@ -408,13 +463,16 @@ class DynamicMinionsShell:
         mic_tag = f"{mic['name']}" if mic["valid"] else f"{mic['name']}（无输入通道）"
         monitoring = "监测中" if self._mic_monitoring else "已停止"
 
-        self.ui.add_system_message(
-            f"模式: {'暂停' if self.ui.paused else '运行'}  "
-            f"LLM 可用: {self._llm.is_available}  "
-            f"状态: {self._state.mode}  "
-            f"麦克风: {mic_tag}  "
-            f"监测: {monitoring}"
-        )
+        lines = ["Minions 状态"]
+        lines.append(f"  ASR: {self.ui.asr_engine} / {self.ui.asr.status}")
+        jm = self.ui.judge_model or "-"
+        lines.append(f"  Judge: {jm} / {self.ui.judge_provider}")
+        lines.append(f"  Wake: {'active ' + str(int(self.ui.wake_remaining_seconds)) + 's' if self.ui.wake_active else 'inactive'}")
+        llm_label = self.ui.llm_model or self._llm.model or "mock"
+        lines.append(f"  LLM: {llm_label}")
+        lines.append(f"  Logs: logs/minions.log")
+        lines.append(f"  麦克风: {mic_tag}  监测: {monitoring}")
+        self.ui.add_system_message("\n".join(lines))
         self._app.invalidate()
 
     async def _cmd_model(self) -> None:

@@ -15,6 +15,7 @@ from voice_agent.core.agent_core import AgentCore
 from voice_agent.core.wake_name import WakeNameMatcher
 from voice_agent.core.persona_test_cases import PERSONA_TEST_CASES
 from voice_agent.core.local_judge_client import LocalJudgeClient
+from voice_agent.core.health_check import check_runtime_health
 from voice_agent.asr.mock_asr import MockASR
 from voice_agent.asr.sherpa_onnx_asr import SherpaOnnxASR
 from voice_agent.output.console_output import handle_console_output
@@ -252,6 +253,8 @@ async def run_cli(
     config_path: str,
     asr_override: str | None = None,
     vad_threshold: float | None = None,
+    health_report: object | None = None,
+    runtime_info: dict | None = None,
 ) -> None:
     """CLI 交互模式：启动 AgentCore 管道 + 交互式外壳，可选 ASR 识别。"""
     config = get_config(config_path)
@@ -283,12 +286,16 @@ async def run_cli(
         device=ac.get("device"),
     )
 
-    # ASR 引擎（可选）
+    # ASR 引擎（可选 — 模型文件不存在时不崩溃）
     asr_engine = None
     asr_engine_name = asr_override or config.get("asr", {}).get("engine", "mock")
     if asr_engine_name != "mock":
-        asr_engine = build_asr(asr_engine_name, bus, config)
-        logger.info("[系统] ASR 引擎: %s", asr_engine_name)
+        try:
+            asr_engine = build_asr(asr_engine_name, bus, config)
+            logger.info("[系统] ASR 引擎: %s", asr_engine_name)
+        except Exception as e:
+            logger.warning("[系统] ASR 引擎初始化失败: %s，将使用键盘输入", e)
+            asr_engine = None
 
     # 桥接 asr.final → AgentCore
     async def on_asr_final(event: dict) -> None:
@@ -319,7 +326,12 @@ async def run_cli(
     bus.subscribe(on_command)
 
     # 交互式外壳
-    shell = DynamicMinionsShell(bus, agent, state, llm, mic=mic, asr_engine=asr_engine)
+    shell = DynamicMinionsShell(
+        bus, agent, state, llm,
+        mic=mic, asr_engine=asr_engine,
+        health_report=health_report,
+        runtime_info=runtime_info,
+    )
     shell.subscribe()
 
     llm_mode = "真实调用" if llm.is_available else "mock 模式"
@@ -334,6 +346,39 @@ async def run_cli(
         if local_judge is not None:
             await local_judge.close()
         logger.info("[系统] voice-agent CLI 已退出")
+
+
+async def run_tui(
+    config_path: str,
+    asr_override: str | None = None,
+    vad_threshold: float | None = None,
+) -> None:
+    """TUI 默认模式：健康检查 + 完整 TUI。"""
+    config = get_config(config_path)
+    health_report = check_runtime_health(config)
+
+    runtime_info = {
+        "asr_engine": asr_override or config.get("asr", {}).get("engine", "mock"),
+        "judge_provider": config.get("judge", {}).get("provider", "rule"),
+        "judge_model": config.get("judge", {}).get("local", {}).get("model", ""),
+        "llm_model": config.get("llm", {}).get("model", ""),
+        "assistant_name": config.get("assistant", {}).get("name", "琉璃川"),
+    }
+
+    # 如果 ASR 模型缺失，asr_override 设为 mock 避免崩溃
+    if health_report.has_error:
+        for item in health_report.items:
+            if (not item.ok) and item.level == "error" and "ASR" in item.name:
+                asr_override = "mock"
+                break
+
+    await run_cli(
+        config_path,
+        asr_override=asr_override,
+        vad_threshold=vad_threshold,
+        health_report=health_report,
+        runtime_info=runtime_info,
+    )
 
 
 async def run_asr_test(
@@ -518,7 +563,12 @@ def main() -> None:
     parser.add_argument("--asr", default=None, help="ASR 引擎覆盖 (mock / sherpa-onnx)")
     parser.add_argument("--mic-test", action="store_true", help="麦克风测试模式（不启动 ASR/LLM）")
     parser.add_argument("--device", default=None, help="麦克风设备 ID 或名称子串 (仅 --mic-test 时有效)")
-    parser.add_argument("--cli", action="store_true", help="CLI 交互模式（可选 --asr 启用语音）")
+    parser.add_argument("--cli", action="store_true", help="兼容旧参数：进入 TUI。现在默认就是 TUI，可以省略。")
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="无 TUI 运行，直接启动 ASR/Agent 管道",
+    )
     parser.add_argument("--list-devices", action="store_true", help="列出所有音频设备")
     parser.add_argument(
         "--vad-threshold",
@@ -559,9 +609,11 @@ def main() -> None:
         elif args.judge_test:
             asyncio.run(run_judge_test(args.config, args.judge_test))
         elif args.cli:
-            asyncio.run(run_cli(args.config, args.asr, args.vad_threshold))
-        else:
+            asyncio.run(run_tui(args.config, args.asr, args.vad_threshold))
+        elif args.headless:
             asyncio.run(run(args.config, args.asr, args.vad_threshold))
+        else:
+            asyncio.run(run_tui(args.config, args.asr, args.vad_threshold))
     except KeyboardInterrupt:
         pass
     except FileNotFoundError as e:

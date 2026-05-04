@@ -1,136 +1,84 @@
-# Minions — 常驻语音 Agent
+# Minions — 常驻语音 Agent TUI
 
-常驻后台的语音助手，支持语音活动检测（VAD）、流式语音识别（ASR）、LLM 驱动对话决策，以及可选的 WebSocket 输出。
+常驻语音 Agent，支持语音活动检测（VAD）、流式语音识别（ASR）、LLM 驱动对话决策、本地小模型语义 Judge，以及可选的 WebSocket 输出。
 
-## 快速开始
+采用 OpenCode 风格的 TUI 界面，顶部状态栏 + 左侧对话 + 右侧状态面板 + 底部输入框。
+
+## 日常启动
 
 ```bash
-# 安装基础依赖
+conda run -n Minions python -m voice_agent.main
+```
+
+默认启动：
+- TUI 全屏界面
+- sherpa-onnx ASR（语音识别）
+- Local Judge qwen3.5:4b（语义判断）
+- 主 LLM（琉璃川人格）
+- WebSocket 输出
+
+无需记忆任何参数。
+
+## 依赖安装
+
+```bash
+# 基础依赖
 pip install -e .
 
-# 启动（使用 mock ASR，从控制台输入文本模拟语音）
-python -m voice_agent.main --asr mock
+# ASR 可选依赖（sherpa-onnx）
+pip install -e ".[asr]"
+
+# 开发依赖（pytest 等）
+pip install -e ".[dev]"
+
+# Local Judge 模型
+ollama pull qwen3.5:4b
 ```
 
 ## 配置
 
-`config.yaml` 控制所有行为：ASR 引擎、音频参数、干预策略、LLM 连接等。
+`config.yaml` 控制所有行为：ASR 引擎、音频参数、干预策略、LLM 连接、Judge 设置等。
 敏感信息（API key 等）通过环境变量或 `.env` 文件设置。
 
-## 命令行选项
-
-| 选项 | 说明 |
-|------|------|
-| `--asr mock` | Mock ASR（键盘输入模拟语音） |
-| `--asr sherpa-onnx` | 真实语音识别（需安装可选依赖） |
-| `--cli` | CLI 交互模式（MinionsShell，含 VU 监测） |
-| `--mic-test` | 麦克风测试模式 |
-| `--asr-test sherpa-onnx` | 只测试 ASR，不调用 LLM/Gate |
-| `--vad-threshold <float>` | 覆盖 VAD RMS 阈值 |
-| `--list-devices` | 列出所有音频设备 |
-| `--device <id>` | 指定麦克风设备 ID |
-
-## 真实语音识别 sherpa-onnx
-
-第一版使用 RMS VAD 分段识别，不是逐字 streaming。
-
-工作流程：麦克风采集 → 基于能量的语音分段 → 静音检测到结束 → 整段送入 sherpa-onnx offline recognizer → 输出文本。
-
-### 安装
+## 调试命令
 
 ```bash
-pip install -e ".[asr]"
-```
-
-### 准备模型
-
-从 https://github.com/k2-fsa/sherpa-onnx/releases 下载离线模型。
-
-### 配置
-
-修改 `config.yaml`：
-
-```yaml
-asr:
-  engine: "sherpa-onnx"
-  sherpa_onnx:
-    tokens: "./models/sherpa-onnx/tokens.txt"
-    model: "./models/sherpa-onnx/model.int8.onnx"
-    # 或者 transducer 模型：
-    # encoder: "./models/encoder.onnx"
-    # decoder: "./models/decoder.onnx"
-    # joiner: "./models/joiner.onnx"
-```
-
-### 启动
-
-```bash
-python -m voice_agent.main --asr sherpa-onnx
-```
-
-## 真实 ASR 调试
-
-安装 ASR 可选依赖：
-
-```bash
-pip install -e ".[asr]"
-```
-
-先测试麦克风：
-
-```bash
+# 麦克风测试
 python -m voice_agent.main --mic-test
-```
 
-只测试 ASR，不调用 LLM：
-
-```bash
+# ASR 测试（只测试语音识别，不调 LLM）
 python -m voice_agent.main --asr-test sherpa-onnx
+
+# 测试本地 Judge 判断
+python -m voice_agent.main --judge-test "这剧情怎么这样"
+
+# 测试琉璃川人格 Prompt 效果
+python -m voice_agent.main --persona-test
+
+# 列出音频设备
+python -m voice_agent.main --list-devices
+
+# 无 TUI 后台模式
+python -m voice_agent.main --headless
 ```
 
-如果环境噪声较大，可以调高 VAD 阈值：
+## TUI 命令
 
-```bash
-python -m voice_agent.main --asr-test sherpa-onnx --vad-threshold 0.012
-```
-
-如果说话检测不到，可以调低阈值：
-
-```bash
-python -m voice_agent.main --asr-test sherpa-onnx --vad-threshold 0.006
-```
-
-完整语音 Agent：
-
-```bash
-python -m voice_agent.main --asr sherpa-onnx
-```
-
-CLI + 语音：
-
-```bash
-python -m voice_agent.main --cli --asr sherpa-onnx
-```
-
-## CLI 交互模式
-
-```bash
-python -m voice_agent.main --cli
-```
-
-启动后可用命令：
+程序启动后，在底部输入框可输入命令：
 
 | 命令 | 说明 |
 |------|------|
+| `/help` | 显示帮助 |
+| `/status` | 系统状态 |
+| `/debug` | 显示 Gate/Judge/ASR 内部状态 |
 | `/mic monitor` | 实时麦克风 VU 音量监测 |
 | `/mic list` | 列出音频设备 |
 | `/mic select <id>` | 选择麦克风 |
 | `/mic autodetect` | 自动检测有音频输入的设备 |
-| `/mic autodetect --select` | 自动检测并切换到最佳设备 |
-| `/mic info` | 查看当前麦克风信息 |
-| `/pause` / `/resume` | 暂停/恢复 AI 回应 |
-| `/status` | 系统状态 |
-| `/help` | 帮助 |
+| `/pause` | 暂停 AI 回应 |
+| `/resume` | 恢复 AI 回应 |
+| `/clear` | 清屏 |
+| `/exit` | 退出 |
 
 ## 项目结构
 
@@ -143,15 +91,21 @@ src/voice_agent/
 ├── audio/                  # 音频采集 & VAD
 │   ├── microphone.py       # 麦克风采集（sounddevice）
 │   └── segmenter.py        # RMS 语音分段器
-├── cli/                    # 交互式 CLI
-│   └── shell.py            # MinionsShell（prompt_toolkit + rich）
+├── cli/                    # 交互式 TUI
+│   ├── dynamic_shell.py    # 全屏 prompt_toolkit TUI
+│   ├── tui_renderer.py     # OpenCode 风格渲染器
+│   ├── ui_state.py         # UI 状态模型
+│   ├── formatters.py       # 格式化函数
+│   └── shell.py            # 基础 shell
 ├── core/                   # 核心逻辑
 │   ├── agent_core.py       # Agent 核心
+│   ├── intervention_gate.py# 介入判断器
+│   ├── local_judge_client.py # 本地语义 Judge
+│   ├── health_check.py     # 运行时健康检查
 │   ├── conversation_state.py
-│   ├── intervention_gate.py
-│   └── llm_client.py       # LLM 客户端（OpenAI 兼容）
+│   └── llm_client.py       # LLM 客户端
 ├── output/                 # 输出
-│   ├── console_output.py   # 控制台彩色输出
+│   ├── console_output.py   # 控制台输出
 │   └── websocket_server.py # WebSocket 输出
 ├── utils/
 │   └── text_normalizer.py

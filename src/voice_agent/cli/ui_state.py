@@ -49,6 +49,9 @@ class UIState:
     running: bool = True
     paused: bool = False
 
+    # 应用信息
+    app_name: str = "Minions"
+    assistant_name: str = "琉璃川"
     conversation_mode: str = "passive_listening"
 
     messages: list[ChatMessage] = field(default_factory=list)
@@ -60,8 +63,39 @@ class UIState:
 
     mic: MicSnapshot = field(default_factory=MicSnapshot)
 
+    # 运行时信息
+    asr_engine: str = "sherpa-onnx"
+    judge_provider: str = "local"
+    judge_model: str = "qwen3.5:4b"
+    llm_model: str = ""
+
+    # 唤醒状态
+    wake_active: bool = False
+    wake_remaining_seconds: float = 0.0
+
+    # 最新 Judge 结果
+    latest_judge_provider: str = ""
+    latest_judge_target: str = ""
+    latest_judge_should_reply: bool = False
+    latest_judge_confidence: float = 0.0
+    latest_judge_reason: str = ""
+
+    # 右侧通知
+    notifications: list[str] = field(default_factory=list)
+    max_notifications: int = 6
+
+    # 健康检查
+    health_items: list = field(default_factory=list)
+
     status_line: str = ""
     error_line: str = ""
+
+    def add_notification(self, text: str) -> None:
+        if not text:
+            return
+        self.notifications.append(text)
+        if len(self.notifications) > self.max_notifications:
+            self.notifications = self.notifications[-self.max_notifications:]
 
     def add_user_message(self, text: str) -> None:
         self.messages.append(ChatMessage(MessageRole.USER, text))
