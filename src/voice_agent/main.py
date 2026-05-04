@@ -331,6 +331,8 @@ async def run_cli(
         mic=mic, asr_engine=asr_engine,
         health_report=health_report,
         runtime_info=runtime_info,
+        config=config,
+        config_path=config_path,
     )
     shell.subscribe()
 

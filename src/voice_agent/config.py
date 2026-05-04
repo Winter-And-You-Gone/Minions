@@ -46,6 +46,24 @@ def get_config(config_path: str = "config.yaml") -> dict:
     return _config_cache
 
 
+def save_config(config: dict, config_path: str = "config.yaml") -> None:
+    """保存配置到 YAML 文件，并清除缓存。"""
+    global _config_cache
+
+    path = Path(config_path)
+    with open(path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(
+            config,
+            f,
+            allow_unicode=True,
+            sort_keys=False,
+            default_flow_style=False,
+        )
+
+    # 清除缓存，下次 get_config 重新读取
+    _config_cache = None
+
+
 def reload_config(config_path: str = "config.yaml") -> dict:
     """强制重新加载配置（绕过缓存）。"""
     global _config_cache

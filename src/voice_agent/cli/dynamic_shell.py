@@ -27,6 +27,11 @@ from voice_agent.cli.tui_renderer import (
     format_top_bar,
 )
 from voice_agent.cli.ui_state import GateView, LLMView, UIState
+from voice_agent.cli.command_completer import (
+    COMMAND_SPECS as _CMD_SPECS,
+    MinionsCommandCompleter,
+)
+from voice_agent.config import save_config
 from voice_agent.core.agent_core import AgentCore
 from voice_agent.core.conversation_state import ConversationState
 from voice_agent.core.llm_client import LLMClient
@@ -56,6 +61,8 @@ class DynamicMinionsShell:
         asr_engine: object | None = None,
         health_report: object | None = None,
         runtime_info: dict | None = None,
+        config: dict | None = None,
+        config_path: str = "config.yaml",
     ) -> None:
         self._bus = bus
         self._agent = agent
@@ -64,6 +71,8 @@ class DynamicMinionsShell:
         self._mic = mic
         self._asr_engine = asr_engine
         self._health_report = health_report
+        self._config = config
+        self._config_path = config_path
         self._logger = get_logger()
 
         # 状态
@@ -95,6 +104,8 @@ class DynamicMinionsShell:
         self._input_buffer = Buffer(
             accept_handler=self._on_accept,
             history=FileHistory(str(_HISTORY_FILE)),
+            completer=MinionsCommandCompleter(),
+            complete_while_typing=True,
         )
 
         # 先构建快捷键，再构建 UI（UI 需要 _kb）
@@ -177,7 +188,7 @@ class DynamicMinionsShell:
             mouse_support=False,
         )
         self._app.bottom_toolbar = lambda: [
-            ("ansibrightblack", " /help /status /debug /mic /pause /resume /clear /exit "),
+            ("ansibrightblack", " / 输入命令 · Tab 补全 · Enter 执行 · Ctrl+C 退出 · /help 查看全部命令 "),
         ]
 
     def _build_key_bindings(self) -> None:
@@ -192,6 +203,22 @@ class DynamicMinionsShell:
         @self._kb.add(Keys.ControlC)
         def _exit(event: object) -> None:
             asyncio.create_task(self._cmd_exit())
+
+        @self._kb.add(Keys.Tab)
+        def _complete(event: object) -> None:
+            buff = self._input_buffer
+            if buff.complete_state:
+                buff.complete_next()
+            else:
+                buff.start_completion(select_first=True)
+
+        @self._kb.add(Keys.BackTab)
+        def _complete_prev(event: object) -> None:
+            buff = self._input_buffer
+            if buff.complete_state:
+                buff.complete_previous()
+            else:
+                buff.start_completion(select_first=True)
 
         @self._kb.add(Keys.Up)
         def _hist_back(event: object) -> None:
@@ -280,6 +307,58 @@ class DynamicMinionsShell:
         else:
             self.ui.wake_active = False
             self.ui.wake_remaining_seconds = 0.0
+
+    def _save_assistant_config(self) -> None:
+        """把当前 wake matcher 的 assistant 配置写回 config.yaml。"""
+        import yaml as _yaml
+        from pathlib import Path as _Path
+
+        matcher = getattr(self._agent._gate, "wake_matcher", None)
+        if matcher is None:
+            self.ui.add_system_message("当前未启用唤醒名功能，无法保存配置")
+            self._app.invalidate()
+            return
+
+        if self._config is None:
+            self.ui.add_system_message("当前没有可写配置对象，无法保存")
+            self._app.invalidate()
+            return
+
+        cfg = matcher.config
+
+        # 重新读取原始 YAML（保留 ${VAR} 占位符），只 patch assistant 段
+        path = _Path(self._config_path)
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                raw = _yaml.safe_load(f) or {}
+        else:
+            raw = {}
+
+        assistant_cfg = raw.setdefault("assistant", {})
+        assistant_cfg["name"] = cfg.name
+        assistant_cfg["user_title"] = getattr(cfg, "user_title", "少爷")
+        assistant_cfg["wake_aliases"] = list(cfg.aliases)
+
+        wake_cfg = assistant_cfg.setdefault("wake", {})
+        wake_cfg["enabled"] = getattr(cfg, "enabled", True)
+        wake_cfg["session_seconds"] = getattr(cfg, "session_seconds", 120)
+        wake_cfg["silence_timeout_seconds"] = getattr(cfg, "silence_timeout_seconds", 90)
+        wake_cfg["strip_wake_name"] = getattr(cfg, "strip_wake_name", True)
+        wake_cfg["allow_llm_turn_away_judge"] = getattr(cfg, "allow_llm_turn_away_judge", True)
+
+        with open(path, "w", encoding="utf-8") as f:
+            _yaml.safe_dump(
+                raw,
+                f,
+                allow_unicode=True,
+                sort_keys=False,
+                default_flow_style=False,
+            )
+
+        # 更新内存 config 的 assistant 段
+        self._config["assistant"] = assistant_cfg
+
+        self.ui.add_notification(f"配置已保存到 {self._config_path}")
 
     def subscribe(self) -> None:
         self._bus.subscribe(self.on_event)
@@ -381,7 +460,7 @@ class DynamicMinionsShell:
 
         info = self.COMMANDS.get(cmd)
         if info is None:
-            self.ui.add_system_message(f"未知命令: {cmd}    输入 /help 查看帮助")
+            self.ui.add_system_message(f"未知命令: {cmd}。输入 / 后按 Tab 查看可用命令，或输入 /help。")
             self._app.invalidate()
             return
 
@@ -392,13 +471,14 @@ class DynamicMinionsShell:
 
     async def _cmd_help(self) -> None:
         lines = ["可用命令："]
-        seen = set()
-        for cmd, (desc, _) in sorted(self.COMMANDS.items()):
-            if desc not in seen:
-                seen.add(desc)
-                lines.append(f"  {cmd:<12s} {desc}")
-            else:
-                lines.append(f"  {cmd:<12s}  ")
+        for spec in _CMD_SPECS:
+            alias = f"  别名: {', '.join(spec.aliases)}" if spec.aliases else ""
+            usage = f"  用法: {spec.usage}" if spec.usage else ""
+            lines.append(f"  {spec.command:<12s} {spec.description}")
+            if alias:
+                lines.append(f"                {alias}")
+            if usage:
+                lines.append(f"                {usage}")
         self.ui.add_system_message("\n".join(lines))
         self._app.invalidate()
 
@@ -492,10 +572,12 @@ class DynamicMinionsShell:
                     f"当前名字: {cfg.name}\n"
                     f"唤醒别名: {', '.join(cfg.aliases)}\n"
                     "用法:\n"
-                    "  /name set 米粒\n"
-                    "  /name alias add 迷你\n"
-                    "  /name alias remove 迷你\n"
-                    "  /name alias list"
+                    "  /name\n"
+                    "  /name set 琉璃川\n"
+                    "  /name alias add 六里川\n"
+                    "  /name alias remove 六里川\n"
+                    "  /name alias list\n"
+                    "  /name save"
                 )
             self._app.invalidate()
             return
@@ -510,9 +592,17 @@ class DynamicMinionsShell:
         if args[0] == "set" and len(args) >= 2:
             new_name = args[1]
             cfg.name = new_name
+            self.ui.assistant_name = new_name
             if new_name not in cfg.aliases:
                 cfg.aliases.insert(0, new_name)
-            self.ui.add_system_message(f"AI 名字已设置为：{new_name}")
+            self._save_assistant_config()
+            self.ui.add_system_message(f"AI 名字已设置并保存为：{new_name}")
+            self._app.invalidate()
+            return
+
+        if args[0] == "save":
+            self._save_assistant_config()
+            self.ui.add_system_message("AI 名字和唤醒别名配置已保存")
             self._app.invalidate()
             return
 
@@ -523,14 +613,16 @@ class DynamicMinionsShell:
                 alias = args[2]
                 if alias not in cfg.aliases:
                     cfg.aliases.append(alias)
-                self.ui.add_system_message(f"已添加唤醒别名：{alias}")
+                self._save_assistant_config()
+                self.ui.add_system_message(f"已添加并保存唤醒别名：{alias}")
                 self._app.invalidate()
                 return
 
             if action == "remove" and len(args) >= 3:
                 alias = args[2]
                 cfg.aliases = [x for x in cfg.aliases if x != alias]
-                self.ui.add_system_message(f"已移除唤醒别名：{alias}")
+                self._save_assistant_config()
+                self.ui.add_system_message(f"已移除并保存唤醒别名：{alias}")
                 self._app.invalidate()
                 return
 
@@ -544,10 +636,11 @@ class DynamicMinionsShell:
         self.ui.add_system_message(
             "用法:\n"
             "  /name\n"
-            "  /name set 米粒\n"
-            "  /name alias add 迷你\n"
-            "  /name alias remove 迷你\n"
-            "  /name alias list"
+            "  /name set 琉璃川\n"
+            "  /name alias add 六里川\n"
+            "  /name alias remove 六里川\n"
+            "  /name alias list\n"
+            "  /name save"
         )
         self._app.invalidate()
 
@@ -561,7 +654,35 @@ class DynamicMinionsShell:
         elif sub == "select" and len(args) >= 2:
             self._mic_device = _resolve_device(args[1])
             self.ui.mic.device_name = str(self._mic_device)
-            self.ui.add_system_message(f"已选择麦克风设备: {self._mic_device}")
+
+            if self._config is not None:
+                # 重新读取原始 YAML，只 patch audio.device
+                import yaml as _yaml
+                from pathlib import Path as _Path
+
+                path = _Path(self._config_path)
+                if path.exists():
+                    with open(path, "r", encoding="utf-8") as f:
+                        raw = _yaml.safe_load(f) or {}
+                else:
+                    raw = {}
+
+                audio_cfg = raw.setdefault("audio", {})
+                audio_cfg["device"] = self._mic_device
+
+                with open(path, "w", encoding="utf-8") as f:
+                    _yaml.safe_dump(
+                        raw, f,
+                        allow_unicode=True, sort_keys=False, default_flow_style=False,
+                    )
+
+                # 更新内存 config
+                self._config["audio"] = audio_cfg
+
+                self.ui.add_system_message(f"已选择并保存麦克风设备: {self._mic_device}")
+            else:
+                self.ui.add_system_message(f"已选择麦克风设备: {self._mic_device}")
+
             self._app.invalidate()
 
         elif sub == "info":
