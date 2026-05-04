@@ -13,6 +13,7 @@ from voice_agent.core.intervention_gate import InterventionGate
 from voice_agent.core.llm_client import LLMClient
 from voice_agent.core.agent_core import AgentCore
 from voice_agent.core.wake_name import WakeNameMatcher
+from voice_agent.core.persona_test_cases import PERSONA_TEST_CASES
 from voice_agent.asr.mock_asr import MockASR
 from voice_agent.asr.sherpa_onnx_asr import SherpaOnnxASR
 from voice_agent.output.console_output import handle_console_output
@@ -333,6 +334,83 @@ async def run_asr_test(
         logger.info("[ASRTest] 已退出")
 
 
+async def run_persona_test(config_path: str) -> None:
+    """Persona 测试模式：不经过 ASR，直接用固定文本测试 Gate + LLM + Prompt。"""
+    config = get_config(config_path)
+    debug = config.get("app", {}).get("debug", False)
+
+    logger = setup_logging(
+        debug=debug,
+        console=True,
+        console_level="WARNING",
+        log_file="logs/persona-test.log",
+    )
+    _ = logger  # used implicitly via logging infra
+
+    bus = EventBus()
+    events: list[dict] = []
+
+    async def collect_event(event: dict) -> None:
+        events.append(event)
+
+    bus.subscribe(collect_event)
+
+    state = ConversationState(
+        _cooldown_seconds=config.get("intervention", {}).get("cooldown_seconds", 5),
+        _conversation_timeout_seconds=config.get("intervention", {}).get("conversation_timeout_seconds", 60),
+    )
+    gate = build_gate(config)
+    llm = build_llm(config)
+    agent = AgentCore(bus, state, gate, llm)
+
+    print("=" * 60)
+    print("  琉璃川 Persona Test")
+    print("=" * 60)
+    print("此模式不经过 ASR，只测试 Gate + LLM + Prompt 效果。")
+    print()
+
+    try:
+        for i, text in enumerate(PERSONA_TEST_CASES, 1):
+            print("-" * 60)
+            print(f"[{i}] 用户：{text}")
+
+            before = len(events)
+            await agent.handle_final_text(text, 1.0)
+            new_events = events[before:]
+
+            gate_events = [e for e in new_events if e.get("type") == "gate.result"]
+            replies = [e for e in new_events if e.get("type") == "agent.reply"]
+            state_changes = [e for e in new_events if e.get("type") == "state.change"]
+
+            for e in gate_events:
+                print(
+                    f"    Gate: {e.get('action')} "
+                    f"score={e.get('score')} "
+                    f"reason={e.get('reason')}"
+                )
+
+            for e in state_changes:
+                print(
+                    f"    State: {e.get('state')} "
+                    f"reason={e.get('reason', '')}"
+                )
+
+            if replies:
+                for e in replies:
+                    print(f"    琉璃川：{e.get('text', '')}")
+            else:
+                print("    琉璃川：<无回复>")
+
+            print()
+
+    finally:
+        await llm.close()
+
+    print("=" * 60)
+    print("Persona Test 完成")
+    print("详细日志见 logs/persona-test.log")
+
+
 def main() -> None:
     # Windows 控制台 UTF-8 支持
     if sys.platform == "win32":
@@ -360,6 +438,11 @@ def main() -> None:
         default=None,
         help="只测试真实 ASR，不调用 LLM/Gate，例如 --asr-test sherpa-onnx",
     )
+    parser.add_argument(
+        "--persona-test",
+        action="store_true",
+        help="测试琉璃川人格 Prompt 效果，不经过 ASR",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -372,6 +455,8 @@ def main() -> None:
             asyncio.run(run_mic_test(args.config, device))
         elif args.asr_test:
             asyncio.run(run_asr_test(args.config, args.asr_test, args.vad_threshold))
+        elif args.persona_test:
+            asyncio.run(run_persona_test(args.config))
         elif args.cli:
             asyncio.run(run_cli(args.config, args.asr, args.vad_threshold))
         else:

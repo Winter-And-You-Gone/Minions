@@ -235,11 +235,17 @@ class InterventionGate:
         return None
 
     def _has_bypass_trigger(self, text: str) -> bool:
-        """检查文本是否包含可绕过冷却的强触发词、问题触发词或问号结尾。"""
+        """检查文本是否包含可绕过冷却的强触发词、弱触发词、问题触发词、连续追问词或问号结尾。"""
         for word in STRONG_TRIGGERS:
             if word in text:
                 return True
+        for word in WEAK_TRIGGERS:
+            if word in text:
+                return True
         for word in QUESTION_TRIGGERS:
+            if word in text:
+                return True
+        for word in FOLLOWUP_TRIGGERS:
             if word in text:
                 return True
         if text.endswith("?"):
