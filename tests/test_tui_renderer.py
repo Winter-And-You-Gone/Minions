@@ -58,7 +58,8 @@ def test_home_panel_shows_system_messages():
     state.add_system_message("系统通知")
     result = format_home_panel(state)
     text = "".join(t for _, t in result)
-    assert "系统通知" in text
+    # SYSTEM 消息不再显示在 Home 面板，已移到 output panel
+    assert "系统通知" not in text
 
 
 def test_home_panel_shows_runtime_info():
@@ -159,6 +160,19 @@ def test_command_panel_help_renders_items():
     ]
     frags = format_command_panel(state)
     assert frags
+
+
+def test_command_output_panel_renders():
+    state = UIState()
+    state.command_panel_mode = "output"
+    state.command_output_title = "Status"
+    state.command_output_lines = ["ASR: sherpa-onnx", "Judge: qwen3.5:4b"]
+
+    frags = format_command_panel(state)
+    assert frags
+    text = "".join(part for _, part in frags)
+    assert "Status" in text
+    assert "ASR: sherpa-onnx" in text
 
 
 # ── footer bar ────────────────────────────────────────────────────────────

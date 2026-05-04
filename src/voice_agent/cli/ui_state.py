@@ -105,12 +105,16 @@ class UIState:
 
     # 命令面板模式
     command_panel_mode: str = "blank"
-    # "blank" = 空白 | "completion" = 补全列表 | "help" = 命令浏览器
+    # "blank" = 空白 | "completion" = 补全列表 | "help" = 命令浏览器 | "output" = 命令输出
     command_panel_title: str = ""
     command_panel_selected_index: int = 0
     command_panel_reserved_rows: int = 14
     help_tab: str = "commands"
     help_items: list[dict] = field(default_factory=list)
+
+    # 命令输出面板
+    command_output_title: str = ""
+    command_output_lines: list[str] = field(default_factory=list)
 
     # 底部状态栏
     footer_left: str = ""
@@ -135,6 +139,25 @@ class UIState:
 
     def add_system_message(self, text: str) -> None:
         self.messages.append(ChatMessage(MessageRole.SYSTEM, text))
+
+    def set_command_output(self, title: str, text: str | list[str]) -> None:
+        self.command_panel_mode = "output"
+        self.command_output_title = title
+        if isinstance(text, str):
+            self.command_output_lines = text.splitlines() or [text]
+        else:
+            self.command_output_lines = [str(x) for x in text]
+        self.completion_visible = False
+        self.completion_items = []
+
+    def clear_command_panel(self) -> None:
+        self.command_panel_mode = "blank"
+        self.command_output_title = ""
+        self.command_output_lines = []
+        self.completion_visible = False
+        self.completion_items = []
+        self.completion_selected_index = 0
+        self.command_panel_selected_index = 0
 
     @property
     def hidden_message_count(self) -> int:

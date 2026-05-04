@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import zip_longest
+
 from voice_agent.cli.ui_state import UIState, MessageRole
 
 # ── LOGO ──────────────────────────────────────────────────────────────────
@@ -28,60 +30,66 @@ _DEFAULT_TIPS = (
 # ── Home 面板 ─────────────────────────────────────────────────────────────
 
 def format_home_panel(state: UIState) -> list[tuple[str, str]]:
-    """主面板：LOGO → 欢迎 → 运行时 → 聊天消息 → 提示/健康。"""
+    """主面板：LOGO（左） + Runtime 信息（右），然后聊天消息，最后提示/健康。"""
     try:
         frags: list[tuple[str, str]] = []
 
-        # LOGO
-        for style, line in LOGO_LINES:
-            frags.append((style, line + "\n"))
-
-        # 欢迎标题
-        title = f"  ✦ {state.app_name}"
-        if state.version_text:
-            title += f"  {state.version_text}"
-        frags.append(("bold cyan", title + "\n"))
-        frags.append(("bold white", f"  Welcome back, {state.assistant_name}!\n"))
-        frags.append(("ansibrightblack", f"  {'─' * 35}\n"))
-
-        # 运行时信息
+        # ── 两栏布局：LOGO 左侧 + Runtime 右侧 ──
         llm_label = state.llm_model or state.llm.model or "mock"
-        frags.append(("ansibrightblack", f"  ASR:   {state.asr_engine}\n"))
-        frags.append(("ansibrightblack", f"  Judge: {state.judge_model} ({state.judge_provider})\n"))
-        frags.append(("ansibrightblack", f"  LLM:   {llm_label}\n"))
-        frags.append(("ansibrightblack", f"  Mode:  {state.conversation_mode}\n"))
+        wake_text = (
+            f"active {int(state.wake_remaining_seconds)}s"
+            if state.wake_active
+            else "inactive"
+        )
 
-        # 麦克风 VU (仅在监测时显示)
+        left_lines = [line for _, line in LOGO_LINES]
+        right_lines = [
+            f"✦ {state.app_name}  {state.version_text or ''}",
+            f"Welcome back, {state.assistant_name}!",
+            "",
+            f"ASR:   {state.asr_engine}",
+            f"Judge: {state.judge_model} ({state.judge_provider})",
+            f"LLM:   {llm_label}",
+            f"Mode:  {state.conversation_mode}",
+            f"Wake:  {wake_text}",
+        ]
+
+        # 麦克风 VU（仅在监测时显示）
         if state.mic.monitoring:
             try:
                 from voice_agent.cli.formatters import vu_bar
-                bar = vu_bar(state.mic.rms, width=15)
-                frags.append(("ansimagenta", f"  Mic:   {bar}  {state.mic.rms:.4f}\n"))
+                bar = vu_bar(state.mic.rms, width=10)
+                right_lines.append(f"Mic:   {bar}  {state.mic.rms:.4f}")
             except Exception:
                 pass
 
-        # 聊天消息
-        if state.messages:
-            frags.append(("", "\n"))
-            frags.append(("bold underline", "  ── Chat ──\n"))
-            if state.hidden_message_count > 0:
-                frags.append(("ansibrightblack", f"  … 已折叠 {state.hidden_message_count} 条更早消息\n"))
-            for msg in state.visible_messages:
-                try:
-                    if msg.role == MessageRole.USER:
-                        frags.append(("bold cyan", f"  你：{msg.text}\n"))
-                    elif msg.role == MessageRole.ASSISTANT:
-                        prefix = f"  {state.assistant_name}：" if state.assistant_name else "  AI："
-                        frags.append(("green", f"{prefix}{msg.text}\n"))
-                    elif msg.role == MessageRole.SYSTEM:
-                        frags.append(("ansiyellow", f"  • {msg.text}\n"))
-                except Exception:
-                    frags.append(("ansiyellow", "  • <message error>\n"))
+        for left, right in zip_longest(left_lines, right_lines, fillvalue=""):
+            frags.append(("bold fg:#ff6eb4", left.ljust(22)))
+            frags.append(("white", right + "\n"))
 
-        # 提示（仅在没有消息时显示，节省空间）
+        frags.append(("ansibrightblack", f"  {'─' * 52}\n"))
+
+        # ── 聊天消息（仅用户/AI，最多 4 条） ──
+        if state.messages:
+            visible_chat = [m for m in state.visible_messages if m.role != MessageRole.SYSTEM]
+            if visible_chat:
+                frags.append(("bold underline", "  Chat\n"))
+                if state.hidden_message_count > 0:
+                    frags.append(("ansibrightblack", f"  … 已折叠 {state.hidden_message_count} 条更早消息\n"))
+                for msg in visible_chat[-4:]:
+                    try:
+                        if msg.role == MessageRole.USER:
+                            frags.append(("bold cyan", f"  你：{msg.text}\n"))
+                        elif msg.role == MessageRole.ASSISTANT:
+                            prefix = f"  {state.assistant_name}：" if state.assistant_name else "  AI："
+                            frags.append(("green", f"{prefix}{msg.text}\n"))
+                    except Exception:
+                        frags.append(("ansiyellow", "  • <message error>\n"))
+
+        # ── 提示（仅在没有消息时显示） ──
         if not state.messages:
             frags.append(("", "\n"))
-            frags.append(("bold underline", "  ── Tips ──\n"))
+            frags.append(("bold underline", "  Tips\n"))
             tips = state.tips_lines if hasattr(state, "tips_lines") and state.tips_lines else _DEFAULT_TIPS
             for tip in tips:
                 frags.append(("ansibrightblack", f"  · {tip}\n"))
@@ -89,7 +97,7 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
             # 健康检查
             if state.health_items:
                 frags.append(("", "\n"))
-                frags.append(("bold underline", "  ── Health ──\n"))
+                frags.append(("bold underline", "  Health\n"))
                 for item in state.health_items:
                     try:
                         ok = getattr(item, "ok", False)
@@ -135,6 +143,8 @@ def format_command_panel(state: UIState) -> list[tuple[str, str]]:
         return format_help_panel(state)
     if state.command_panel_mode == "completion":
         return _format_completion_panel_inner(state)
+    if state.command_panel_mode == "output":
+        return format_output_panel(state)
     # blank
     return _blank_panel(state)
 
@@ -230,6 +240,39 @@ def format_help_panel(state: UIState) -> list[tuple[str, str]]:
         return frags
     except Exception as e:
         return [("red", f"Help panel render error: {e}\n")]
+
+
+# ── Output 面板 ──────────────────────────────────────────────────────────
+
+def format_output_panel(state: UIState) -> list[tuple[str, str]]:
+    """命令输出面板：显示 /status /debug /name 等命令的结果。"""
+    try:
+        rows = state.command_panel_reserved_rows
+        frags: list[tuple[str, str]] = []
+
+        title = state.command_output_title or "Output"
+        frags.append(("bold cyan", f"  {title}\n"))
+        frags.append(("ansibrightblack", f"  {'─' * 72}\n"))
+
+        max_lines = max(0, rows - 3)
+        lines = state.command_output_lines[:max_lines]
+
+        for line in lines:
+            frags.append(("white", f"  {line}\n"))
+
+        if len(state.command_output_lines) > max_lines:
+            hidden = len(state.command_output_lines) - max_lines
+            frags.append(("ansibrightblack", f"  … 还有 {hidden} 行未显示\n"))
+
+        used = 2 + len(lines)
+        while used < rows - 1:
+            frags.append(("", " " * 80 + "\n"))
+            used += 1
+
+        frags.append(("ansibrightblack", "  Esc to close\n"))
+        return frags
+    except Exception as e:
+        return [("red", f"Output panel render error: {e}\n")]
 
 
 # ── 底部状态栏 ────────────────────────────────────────────────────────────

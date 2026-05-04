@@ -227,16 +227,20 @@ class DynamicMinionsShell:
                         self._safe_invalidate()
                         return
 
-                # completion 模式：插入选中项
+                # completion 模式：选中项或直接执行
                 if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
                     idx = self.ui.completion_selected_index
                     if 0 <= idx < len(self.ui.completion_items):
                         item = self.ui.completion_items[idx]
-                        self._input_buffer.text = item.text + " "
+                        current = self._input_buffer.text.strip()
+                        selected = item.text.strip()
+                        # 如果当前输入已经完全等于选中项，直接执行
+                        if current == selected:
+                            self._accept_buffer()
+                            return
+                        # 否则将选中项填入输入框
+                        self._input_buffer.text = selected + " "
                         self._input_buffer.cursor_position = len(self._input_buffer.text)
-                        self.ui.completion_visible = False
-                        self.ui.completion_items = []
-                        self.ui.command_panel_mode = "blank"
                         self._safe_invalidate()
                         return
 
@@ -301,7 +305,7 @@ class DynamicMinionsShell:
                 self._record_ui_error("escape", e)
 
         # ── Up：选 help / completion，否则历史 ──
-        @self._kb.add(Keys.Up)
+        @self._kb.add("up", eager=True)
         def _up(event: object) -> None:
             try:
                 if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
@@ -319,7 +323,7 @@ class DynamicMinionsShell:
                 self._record_ui_error("up", e)
 
         # ── Down：选 help / completion，否则历史 ──
-        @self._kb.add(Keys.Down)
+        @self._kb.add("down", eager=True)
         def _down(event: object) -> None:
             try:
                 if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
@@ -432,13 +436,13 @@ class DynamicMinionsShell:
 
         matcher = getattr(self._agent._gate, "wake_matcher", None)
         if matcher is None:
-            self.ui.add_system_message("当前未启用唤醒名功能，无法保存配置")
-            self._app.invalidate()
+            self.ui.set_command_output("Config", "当前未启用唤醒名功能，无法保存配置")
+            self._safe_invalidate()
             return
 
         if self._config is None:
-            self.ui.add_system_message("当前没有可写配置对象，无法保存")
-            self._app.invalidate()
+            self.ui.set_command_output("Config", "当前没有可写配置对象，无法保存")
+            self._safe_invalidate()
             return
 
         cfg = matcher.config
@@ -676,11 +680,16 @@ class DynamicMinionsShell:
         try:
             text = self._input_buffer.text.strip()
             self._input_buffer.text = ""
+
+            # 只清空 completion，不提前把 command_panel_mode 设为 blank
             self.ui.completion_visible = False
             self.ui.completion_items = []
-            self.ui.command_panel_mode = "blank"
+
             if text:
                 self._create_task(self._handle_input(text), "handle_input")
+            else:
+                self.ui.clear_command_panel()
+
             self._safe_invalidate()
         except Exception as e:
             self._record_ui_error("accept_buffer", e)
@@ -693,6 +702,7 @@ class DynamicMinionsShell:
         if text.startswith("/"):
             await self._dispatch_command(text)
         else:
+            self.ui.clear_command_panel()
             self.ui.add_user_message(text)
             self._scroll_to_bottom()
             self._safe_invalidate()
@@ -734,7 +744,10 @@ class DynamicMinionsShell:
 
             info = self.COMMANDS.get(cmd)
             if info is None:
-                self.ui.add_system_message(f"未知命令: {cmd}。输入 / 后按 Tab 查看可用命令，或输入 /help。")
+                self.ui.set_command_output(
+                    "Unknown command",
+                    f"未知命令: {cmd}\n输入 / 后按 Tab 查看可用命令，或输入 /help。"
+                )
                 self._safe_invalidate()
                 return
 
@@ -765,7 +778,7 @@ class DynamicMinionsShell:
 
     async def _cmd_debug(self) -> None:
         g = self.ui.latest_gate
-        lines = ["── Debug ──"]
+        lines = []
         lines.append(f"Gate: {g.action} score={g.score} reason={g.reason}")
         lines.append(
             f"Judge: provider={self.ui.latest_judge_provider} "
@@ -782,9 +795,9 @@ class DynamicMinionsShell:
                 name = getattr(item, "name", "?")
                 ok = getattr(item, "ok", False)
                 level = getattr(item, "level", "info")
-                status = "✓" if ok else ("✗" if level == "error" else "!")
-                lines.append(f"  Health {status} {name}")
-        self.ui.add_system_message("\n".join(lines))
+                tag = "✓" if ok else ("✗" if level == "error" else "!")
+                lines.append(f"  Health {tag} {name}")
+        self.ui.set_command_output("Debug", lines)
         self._safe_invalidate()
 
     async def _cmd_exit(self) -> None:
@@ -802,12 +815,17 @@ class DynamicMinionsShell:
 
     async def _cmd_clear(self) -> None:
         self.ui.messages.clear()
+        self.ui.clear_command_panel()
         self._safe_invalidate()
 
     async def _cmd_mode(self) -> None:
-        self.ui.add_system_message(
-            f"状态: {self._state.mode}  active_until: {self._state.active_until:.1f}  "
-            f"cooldown_until: {self._state.cooldown_until:.1f}"
+        self.ui.set_command_output(
+            "Conversation Mode",
+            [
+                f"mode:          {self._state.mode}",
+                f"active_until:  {self._state.active_until:.1f}",
+                f"cooldown_until: {self._state.cooldown_until:.1f}",
+            ],
         )
         self._safe_invalidate()
 
@@ -817,23 +835,23 @@ class DynamicMinionsShell:
             mic_tag = f"{mic['name']}" if mic["valid"] else f"{mic['name']}（无输入通道）"
             monitoring = "监测中" if self._mic_monitoring else "已停止"
 
-            lines = ["Minions 状态"]
-            lines.append(f"  ASR: {self.ui.asr_engine} / {self.ui.asr.status}")
+            lines = []
+            lines.append(f"ASR:   {self.ui.asr_engine} / {self.ui.asr.status}")
             jm = self.ui.judge_model or "-"
-            lines.append(f"  Judge: {jm} / {self.ui.judge_provider}")
-            lines.append(f"  Wake: {'active ' + str(int(self.ui.wake_remaining_seconds)) + 's' if self.ui.wake_active else 'inactive'}")
+            lines.append(f"Judge: {jm} / {self.ui.judge_provider}")
+            lines.append(f"Wake:  {'active ' + str(int(self.ui.wake_remaining_seconds)) + 's' if self.ui.wake_active else 'inactive'}")
             llm_label = self.ui.llm_model or self._llm.model or "mock"
-            lines.append(f"  LLM: {llm_label}")
-            lines.append(f"  Logs: logs/minions.log")
-            lines.append(f"  麦克风: {mic_tag}  监测: {monitoring}")
-            self.ui.add_system_message("\n".join(lines))
+            lines.append(f"LLM:   {llm_label}")
+            lines.append(f"Logs:  logs/minions.log")
+            lines.append(f"Mic:   {mic_tag}  监测: {monitoring}")
+            self.ui.set_command_output("Status", lines)
         except Exception as e:
             self._record_ui_error("cmd_status", e)
         self._safe_invalidate()
 
     async def _cmd_model(self) -> None:
         model = self._llm.model if self._llm.model else "mock"
-        self.ui.add_system_message(f"当前连接的模型是：{model}")
+        self.ui.set_command_output("Model", f"当前连接的模型是：{model}")
         self._safe_invalidate()
 
     async def _cmd_name(self, *args: str) -> None:
@@ -842,25 +860,29 @@ class DynamicMinionsShell:
 
             if not args or not matcher:
                 if matcher is None:
-                    self.ui.add_system_message("当前未启用唤醒名功能")
+                    self.ui.set_command_output("Assistant Name", "当前未启用唤醒名功能")
                 else:
                     cfg = matcher.config
-                    self.ui.add_system_message(
-                        f"当前名字: {cfg.name}\n"
-                        f"唤醒别名: {', '.join(cfg.aliases)}\n"
-                        "用法:\n"
-                        "  /name\n"
-                        "  /name set 琉璃川\n"
-                        "  /name alias add 六里川\n"
-                        "  /name alias remove 六里川\n"
-                        "  /name alias list\n"
-                        "  /name save"
+                    self.ui.set_command_output(
+                        "Assistant Name",
+                        [
+                            f"当前名字: {cfg.name}",
+                            f"唤醒别名: {', '.join(cfg.aliases)}",
+                            "",
+                            "用法:",
+                            "  /name",
+                            "  /name set 琉璃川",
+                            "  /name alias add 六里川",
+                            "  /name alias remove 六里川",
+                            "  /name alias list",
+                            "  /name save",
+                        ],
                     )
                 self._safe_invalidate()
                 return
 
             if matcher is None:
-                self.ui.add_system_message("当前未启用唤醒名功能")
+                self.ui.set_command_output("Assistant Name", "当前未启用唤醒名功能")
                 self._safe_invalidate()
                 return
 
@@ -873,13 +895,13 @@ class DynamicMinionsShell:
                 if new_name not in cfg.aliases:
                     cfg.aliases.insert(0, new_name)
                 self._save_assistant_config()
-                self.ui.add_system_message(f"AI 名字已设置并保存为：{new_name}")
+                self.ui.set_command_output("Assistant Name", f"AI 名字已设置并保存为：{new_name}")
                 self._safe_invalidate()
                 return
 
             if args[0] == "save":
                 self._save_assistant_config()
-                self.ui.add_system_message("AI 名字和唤醒别名配置已保存")
+                self.ui.set_command_output("Assistant Name", "AI 名字和唤醒别名配置已保存")
                 self._safe_invalidate()
                 return
 
@@ -891,7 +913,7 @@ class DynamicMinionsShell:
                     if alias not in cfg.aliases:
                         cfg.aliases.append(alias)
                     self._save_assistant_config()
-                    self.ui.add_system_message(f"已添加并保存唤醒别名：{alias}")
+                    self.ui.set_command_output("Assistant Name", f"已添加并保存唤醒别名：{alias}")
                     self._safe_invalidate()
                     return
 
@@ -899,25 +921,32 @@ class DynamicMinionsShell:
                     alias = args[2]
                     cfg.aliases = [x for x in cfg.aliases if x != alias]
                     self._save_assistant_config()
-                    self.ui.add_system_message(f"已移除并保存唤醒别名：{alias}")
+                    self.ui.set_command_output("Assistant Name", f"已移除并保存唤醒别名：{alias}")
                     self._safe_invalidate()
                     return
 
                 if action == "list":
-                    self.ui.add_system_message(
-                        f"当前名字: {cfg.name}\n唤醒别名: {', '.join(cfg.aliases)}"
+                    self.ui.set_command_output(
+                        "Assistant Name",
+                        [
+                            f"当前名字: {cfg.name}",
+                            f"唤醒别名: {', '.join(cfg.aliases)}",
+                        ],
                     )
                     self._safe_invalidate()
                     return
 
-            self.ui.add_system_message(
-                "用法:\n"
-                "  /name\n"
-                "  /name set 琉璃川\n"
-                "  /name alias add 六里川\n"
-                "  /name alias remove 六里川\n"
-                "  /name alias list\n"
-                "  /name save"
+            self.ui.set_command_output(
+                "Assistant Name",
+                [
+                    "用法:",
+                    "  /name",
+                    "  /name set 琉璃川",
+                    "  /name alias add 六里川",
+                    "  /name alias remove 六里川",
+                    "  /name alias list",
+                    "  /name save",
+                ],
             )
         except Exception as e:
             self._record_ui_error("cmd_name", e)
@@ -928,13 +957,14 @@ class DynamicMinionsShell:
             sub = args[0] if args else "help"
 
             if sub == "list":
-                self.ui.add_system_message(_list_devices_str())
+                self.ui.set_command_output("Microphones", _list_devices_str())
                 self._safe_invalidate()
 
             elif sub == "select" and len(args) >= 2:
                 self._mic_device = _resolve_device(args[1])
                 self.ui.mic.device_name = str(self._mic_device)
 
+                msg = f"已选择麦克风设备: {self._mic_device}"
                 if self._config is not None:
                     import yaml as _yaml
                     from pathlib import Path as _Path
@@ -956,18 +986,22 @@ class DynamicMinionsShell:
                         )
 
                     self._config["audio"] = audio_cfg
-                    self.ui.add_system_message(f"已选择并保存麦克风设备: {self._mic_device}")
-                else:
-                    self.ui.add_system_message(f"已选择麦克风设备: {self._mic_device}")
+                    msg = f"已选择并保存麦克风设备: {self._mic_device}"
 
+                self.ui.set_command_output("Microphone", msg)
                 self._safe_invalidate()
 
             elif sub == "info":
                 mic = _get_mic_info(self._mic_device)
                 valid = "有效（输入设备）" if mic["valid"] else "无效（无输入通道）"
-                self.ui.add_system_message(
-                    f"设备: [{mic['id']}] {mic['name']}  状态: {valid}  "
-                    f"采样率: {mic['sr']:.0f} Hz  输入通道: {mic['channels']}"
+                self.ui.set_command_output(
+                    "Microphone Info",
+                    [
+                        f"设备: [{mic['id']}] {mic['name']}",
+                        f"状态: {valid}",
+                        f"采样率: {mic['sr']:.0f} Hz",
+                        f"输入通道: {mic['channels']}",
+                    ],
                 )
                 self._safe_invalidate()
 
@@ -986,7 +1020,7 @@ class DynamicMinionsShell:
                     "/mic select <id|名称>  选择麦克风设备\n"
                     "/mic info          查看当前麦克风信息"
                 )
-                self.ui.add_system_message(help_text)
+                self.ui.set_command_output("Microphone", help_text)
                 self._safe_invalidate()
         except Exception as e:
             self._record_ui_error("cmd_mic", e)
@@ -994,7 +1028,7 @@ class DynamicMinionsShell:
     async def _cmd_mic_monitor(self) -> None:
         try:
             if self._mic is None:
-                self.ui.add_system_message("未配置麦克风，启动时未传入 mic 参数")
+                self.ui.set_command_output("Microphone", "未配置麦克风，启动时未传入 mic 参数")
                 self._safe_invalidate()
                 return
 
@@ -1005,13 +1039,13 @@ class DynamicMinionsShell:
                 mic_info = _get_mic_info(self._mic_device)
                 self.ui.mic.device_name = mic_info["name"] if mic_info["valid"] else ""
                 self._mic_monitor_task = asyncio.create_task(self._mic_monitor_loop())
-                self.ui.add_system_message("麦克风监测已启动")
+                self.ui.set_command_output("Microphone", "麦克风监测已启动")
             else:
                 if self._mic_monitor_task:
                     self._mic_monitor_task.cancel()
                     self._mic_monitor_task = None
                 self.ui.mic.rms = 0.0
-                self.ui.add_system_message("麦克风监测已停止")
+                self.ui.set_command_output("Microphone", "麦克风监测已停止")
         except Exception as e:
             self._record_ui_error("mic_monitor", e)
         self._safe_invalidate()
@@ -1020,7 +1054,7 @@ class DynamicMinionsShell:
         try:
             import sounddevice as sd
 
-            self.ui.add_system_message("正在逐个探测麦克风设备（每设备 300ms）...")
+            self.ui.set_command_output("Microphone", "正在逐个探测麦克风设备（每设备 300ms）...")
 
             loop = asyncio.get_running_loop()
             devices = sd.query_devices()
@@ -1039,14 +1073,13 @@ class DynamicMinionsShell:
             self.ui.status_line = ""
             results.sort(key=lambda x: x[2], reverse=True)
 
-            lines = ["麦克风探测结果："]
+            out_lines = ["麦克风探测结果："]
             for rank, (did, name, rms) in enumerate(results, 1):
                 from voice_agent.cli.formatters import vu_bar
                 bar = vu_bar(rms, 15)
                 tag = " 最佳" if rank == 1 else ""
                 status = f"✓ {rms:.6f}" if rms > 0 else "打开失败"
-                lines.append(f"  #{rank} [{did}] {name}  {bar}  {status}{tag}")
-            self.ui.add_system_message("\n".join(lines))
+                out_lines.append(f"  #{rank} [{did}] {name}  {bar}  {status}{tag}")
 
             auto_select = "--select" in args or "-s" in args
             if results and results[0][2] > 0.005:
@@ -1054,9 +1087,9 @@ class DynamicMinionsShell:
                 if auto_select:
                     self._mic_device = best_id
                     self.ui.mic.device_name = best_name
-                    self.ui.add_system_message(f"已选择最佳设备: [{best_id}] {best_name}")
+                    out_lines.append(f"已选择最佳设备: [{best_id}] {best_name}")
                     if self._mic_monitoring and self._mic is not None:
-                        self.ui.add_system_message("正在重启麦克风监测使用新设备...")
+                        out_lines.append("正在重启麦克风监测使用新设备...")
                         if self._mic_monitor_task:
                             self._mic_monitor_task.cancel()
                             with contextlib.suppress(asyncio.CancelledError):
@@ -1066,15 +1099,15 @@ class DynamicMinionsShell:
                             await self._mic.stop()
                         self._mic.device = best_id
                         self._mic_monitor_task = asyncio.create_task(self._mic_monitor_loop())
-                        self.ui.add_system_message("监测已切换到新设备")
+                        out_lines.append("监测已切换到新设备")
                 else:
-                    self.ui.add_system_message(
-                        f"提示: 添加 --select 自动选择 [{best_id}] {best_name}"
-                    )
+                    out_lines.append(f"提示: 添加 --select 自动选择 [{best_id}] {best_name}")
             elif results and results[0][2] > 0:
-                self.ui.add_system_message("所有设备音量极低，未自动选择")
+                out_lines.append("所有设备音量极低，未自动选择")
             else:
-                self.ui.add_system_message("未检测到可用的麦克风设备")
+                out_lines.append("未检测到可用的麦克风设备")
+
+            self.ui.set_command_output("Microphone Auto-Detect", out_lines)
         except Exception as e:
             self._record_ui_error("mic_autodetect", e)
         self._safe_invalidate()
