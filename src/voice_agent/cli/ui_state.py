@@ -103,6 +103,15 @@ class UIState:
     completion_visible: bool = False
     completion_reserved_rows: int = 6
 
+    # 命令面板模式
+    command_panel_mode: str = "blank"
+    # "blank" = 空白 | "completion" = 补全列表 | "help" = 命令浏览器
+    command_panel_title: str = ""
+    command_panel_selected_index: int = 0
+    command_panel_reserved_rows: int = 14
+    help_tab: str = "commands"
+    help_items: list[dict] = field(default_factory=list)
+
     # 底部状态栏
     footer_left: str = ""
     footer_right: str = ""

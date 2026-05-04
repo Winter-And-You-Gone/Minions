@@ -3,6 +3,7 @@
 from voice_agent.cli.ui_state import UIState, CompletionItem
 from voice_agent.cli.tui_renderer import (
     LOGO_LINES,
+    format_command_panel,
     format_completion_panel,
     format_footer_bar,
     format_home_panel,
@@ -93,7 +94,7 @@ def test_input_prompt_paused():
 def test_completion_panel_empty():
     state = UIState()
     result = format_completion_panel(state)
-    assert len(result) == state.completion_reserved_rows
+    assert len(result) == state.command_panel_reserved_rows
     # All lines should be blank (whitespace)
     text = "".join(t for _, t in result)
     assert text.strip() == ""
@@ -101,6 +102,7 @@ def test_completion_panel_empty():
 
 def test_completion_panel_shows_items():
     state = UIState()
+    state.command_panel_mode = "completion"
     state.completion_visible = True
     state.completion_items = [
         CompletionItem(text="/help", display="/help", display_meta="显示帮助"),
@@ -115,6 +117,7 @@ def test_completion_panel_shows_items():
 
 def test_completion_panel_highlights_selected():
     state = UIState()
+    state.command_panel_mode = "completion"
     state.completion_visible = True
     state.completion_selected_index = 0
     state.completion_items = [
@@ -124,6 +127,38 @@ def test_completion_panel_highlights_selected():
     result = format_completion_panel(state)
     # First item should have the "▸" marker
     assert any("▸" in t for _, t in result)
+
+
+# ── command panel (blank / completion / help) ─────────────────────────────
+
+def test_command_panel_blank_renders_rows():
+    state = UIState()
+    state.command_panel_mode = "blank"
+    state.command_panel_reserved_rows = 14
+    frags = format_command_panel(state)
+    assert frags
+    assert len(frags) == state.command_panel_reserved_rows
+
+
+def test_command_panel_completion_renders_items():
+    state = UIState()
+    state.command_panel_mode = "completion"
+    state.completion_visible = True
+    state.completion_items = [
+        CompletionItem(text="/exit", display="/exit", display_meta="退出 Minions")
+    ]
+    frags = format_command_panel(state)
+    assert frags
+
+
+def test_command_panel_help_renders_items():
+    state = UIState()
+    state.command_panel_mode = "help"
+    state.help_items = [
+        {"command": "/exit", "description": "退出 Minions", "usage": "/exit", "aliases": []}
+    ]
+    frags = format_command_panel(state)
+    assert frags
 
 
 # ── footer bar ────────────────────────────────────────────────────────────

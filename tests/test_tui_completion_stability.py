@@ -12,6 +12,7 @@ from voice_agent.cli.command_completer import MinionsCommandCompleter
 def test_completion_panel_handles_non_string_display():
     """确保即使 display / display_meta 不是 str，补全面板也不会崩溃。"""
     state = UIState()
+    state.command_panel_mode = "completion"
     state.completion_visible = True
     state.completion_items = [
         CompletionItem(
@@ -27,6 +28,7 @@ def test_completion_panel_handles_non_string_display():
 def test_completion_panel_handles_empty_display():
     """display 为空字符串时用 text 兜底。"""
     state = UIState()
+    state.command_panel_mode = "completion"
     state.completion_visible = True
     state.completion_items = [
         CompletionItem(
@@ -44,6 +46,7 @@ def test_completion_panel_handles_empty_display():
 def test_completion_panel_handles_none_text():
     """None text 时 str(None) 不会崩溃。"""
     state = UIState()
+    state.command_panel_mode = "completion"
     state.completion_visible = True
     state.completion_items = [
         CompletionItem(

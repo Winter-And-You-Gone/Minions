@@ -125,17 +125,38 @@ def format_input_prompt(state: UIState) -> list[tuple[str, str]]:
 # ── 补全面板 ──────────────────────────────────────────────────────────────
 
 def format_completion_panel(state: UIState) -> list[tuple[str, str]]:
-    """固定 6 行补全面板。没有补全时保持空白。"""
+    """兼容旧引用：转发到新的统一面板。"""
+    return format_command_panel(state)
+
+
+def format_command_panel(state: UIState) -> list[tuple[str, str]]:
+    """统一命令面板：根据 command_panel_mode 分发。"""
+    if state.command_panel_mode == "help":
+        return format_help_panel(state)
+    if state.command_panel_mode == "completion":
+        return _format_completion_panel_inner(state)
+    # blank
+    return _blank_panel(state)
+
+
+def _blank_panel(state: UIState) -> list[tuple[str, str]]:
+    rows = state.command_panel_reserved_rows
+    frags: list[tuple[str, str]] = []
+    for _ in range(rows):
+        frags.append(("", " " * 80 + "\n"))
+    return frags
+
+
+def _format_completion_panel_inner(state: UIState) -> list[tuple[str, str]]:
+    """补全模式：筛选后的命令列表。"""
     try:
         frags: list[tuple[str, str]] = []
         items = state.completion_items
         selected = state.completion_selected_index
-        rows = state.completion_reserved_rows
+        rows = state.command_panel_reserved_rows
 
         if not items or not state.completion_visible:
-            for _ in range(rows):
-                frags.append(("", " " * 80 + "\n"))
-            return frags
+            return _blank_panel(state)
 
         for i in range(rows):
             if i < len(items):
@@ -152,6 +173,63 @@ def format_completion_panel(state: UIState) -> list[tuple[str, str]]:
         return frags
     except Exception as e:
         return [("red", f"Completion render error: {e}\n")]
+
+
+def format_help_panel(state: UIState) -> list[tuple[str, str]]:
+    """帮助模式：命令浏览器，类似 Claude Code 风格。"""
+    try:
+        rows = state.command_panel_reserved_rows
+        frags: list[tuple[str, str]] = []
+
+        # ── Tab 栏 ──
+        tabs = [
+            ("bold underline" if state.help_tab == "Minions" else "bold", " Minions "),
+            ("ansibrightblack", "│"),
+            ("bold underline" if state.help_tab == "general" else "bold", " general "),
+            ("ansibrightblack", "│"),
+            ("bold underline" if state.help_tab == "commands" else "bold", " commands "),
+            ("ansibrightblack", "│"),
+            ("bold underline" if state.help_tab == "custom-commands" else "bold", " custom-commands "),
+        ]
+        for style, text in tabs:
+            frags.append((style, text))
+        frags.append(("", "\n"))
+
+        # ── 标题 ──
+        title = state.command_panel_title or "Browse default commands"
+        frags.append(("bold cyan", f"  {title}\n"))
+        frags.append(("", "\n"))
+
+        # ── 命令列表 ──
+        items = state.help_items
+        selected = state.command_panel_selected_index
+        max_display = max(0, rows - 5)  # 留出 tab + title + 空行 + 底部提示
+
+        for i in range(max_display):
+            if i < len(items):
+                item = items[i]
+                cmd = item.get("command", "")
+                desc = item.get("description", "")
+                aliases = item.get("aliases", [])
+                prefix = "↓ " if i == selected else "  "
+                cmd_style = "bold cyan" if i == selected else "bold white"
+                desc_style = "ansibrightblack" if i == selected else "ansibrightblack"
+                alias_text = f"  (别名: {', '.join(aliases)})" if aliases else ""
+                frags.append((cmd_style, f"{prefix}{cmd}{alias_text}\n"))
+                frags.append((desc_style, f"     {desc}\n"))
+            else:
+                break
+
+        fill = max(0, rows - max_display - len(items)) if len(items) < max_display else 0
+        for _ in range(fill):
+            frags.append(("", " " * 80 + "\n"))
+
+        # ── 底部提示 ──
+        frags.append(("ansibrightblack", "  Esc to cancel  ·  Enter to select command\n"))
+
+        return frags
+    except Exception as e:
+        return [("red", f"Help panel render error: {e}\n")]
 
 
 # ── 底部状态栏 ────────────────────────────────────────────────────────────

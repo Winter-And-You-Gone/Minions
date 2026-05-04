@@ -22,7 +22,7 @@ from voice_agent.cli.shell import (
     _resolve_device,
 )
 from voice_agent.cli.tui_renderer import (
-    format_completion_panel,
+    format_command_panel,
     format_footer_bar,
     format_home_panel,
     format_input_prompt,
@@ -157,11 +157,12 @@ class DynamicMinionsShell:
 
         sep_mid = Window(height=1, char="─")
 
-        # 补全面板（固定 6 行）
-        self._completion_win = Window(
-            FormattedTextControl(lambda: format_completion_panel(self.ui)),
-            height=self.ui.completion_reserved_rows,
-            wrap_lines=True,
+        # 命令面板（固定 14 行，blank/completion/help 三种模式）
+        self._command_panel_win = Window(
+            FormattedTextControl(lambda: format_command_panel(self.ui)),
+            height=self.ui.command_panel_reserved_rows,
+            wrap_lines=False,
+            always_hide_cursor=True,
         )
 
         sep_bot = Window(height=1, char="─")
@@ -177,7 +178,7 @@ class DynamicMinionsShell:
             sep_top,
             input_row,
             sep_mid,
-            self._completion_win,
+            self._command_panel_win,
             sep_bot,
             footer,
         ])
@@ -210,11 +211,24 @@ class DynamicMinionsShell:
         def _exit_ctrl_q(event: object) -> None:
             self._force_exit(event)
 
-        # ── Enter：补全选择或提交输入 ──
+        # ── Enter：补全选择 / help 选中填入 / 提交输入 ──
         @self._kb.add(Keys.Enter)
         def _accept(event: object) -> None:
             try:
-                if self.ui.completion_visible and self.ui.completion_items:
+                # help 模式：把选中命令填入输入框
+                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                    idx = self.ui.command_panel_selected_index
+                    if 0 <= idx < len(self.ui.help_items):
+                        cmd = self.ui.help_items[idx].get("command", "")
+                        self._input_buffer.text = cmd + " "
+                        self._input_buffer.cursor_position = len(cmd) + 1
+                        self.ui.command_panel_mode = "completion"
+                        self._refresh_completion_state()
+                        self._safe_invalidate()
+                        return
+
+                # completion 模式：插入选中项
+                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
                     idx = self.ui.completion_selected_index
                     if 0 <= idx < len(self.ui.completion_items):
                         item = self.ui.completion_items[idx]
@@ -222,62 +236,105 @@ class DynamicMinionsShell:
                         self._input_buffer.cursor_position = len(self._input_buffer.text)
                         self.ui.completion_visible = False
                         self.ui.completion_items = []
+                        self.ui.command_panel_mode = "blank"
                         self._safe_invalidate()
                         return
+
                 self._accept_buffer()
             except Exception as e:
                 self._record_ui_error("enter", e)
 
-        # ── Tab：自定义补全导航 ──
+        # ── Tab：导航 help / completion ──
         @self._kb.add(Keys.Tab)
         def _complete_next(event: object) -> None:
             try:
-                self._refresh_completion_state()
-                if self.ui.completion_items:
-                    self.ui.completion_visible = True
+                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                    n = len(self.ui.help_items)
+                    self.ui.command_panel_selected_index = (self.ui.command_panel_selected_index + 1) % n
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
                     n = len(self.ui.completion_items)
                     self.ui.completion_selected_index = (self.ui.completion_selected_index + 1) % n
-                self._safe_invalidate()
+                    self._safe_invalidate()
+                    return
+                self._refresh_completion_state()
+                if self.ui.completion_items:
+                    self.ui.completion_selected_index = 0
+                    self.ui.command_panel_mode = "completion"
+                    self._safe_invalidate()
             except Exception as e:
                 self._record_ui_error("tab", e)
 
         @self._kb.add(Keys.BackTab)
         def _complete_prev(event: object) -> None:
             try:
-                self._refresh_completion_state()
-                if self.ui.completion_items:
-                    self.ui.completion_visible = True
+                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                    n = len(self.ui.help_items)
+                    self.ui.command_panel_selected_index = (self.ui.command_panel_selected_index - 1) % n
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
                     n = len(self.ui.completion_items)
                     self.ui.completion_selected_index = (self.ui.completion_selected_index - 1) % n
-                self._safe_invalidate()
+                    self._safe_invalidate()
+                    return
+                self._refresh_completion_state()
+                if self.ui.completion_items:
+                    self.ui.completion_selected_index = 0
+                    self.ui.command_panel_mode = "completion"
+                    self._safe_invalidate()
             except Exception as e:
                 self._record_ui_error("backtab", e)
 
-        # ── Escape：清除补全 ──
+        # ── Escape：关闭 help / completion ──
         @self._kb.add(Keys.Escape)
         def _escape(event: object) -> None:
             try:
+                self.ui.command_panel_mode = "blank"
                 self.ui.completion_visible = False
                 self.ui.completion_items = []
                 self.ui.completion_selected_index = 0
+                self.ui.command_panel_selected_index = 0
                 self._safe_invalidate()
             except Exception as e:
                 self._record_ui_error("escape", e)
 
-        # ── 历史 ──
+        # ── Up：选 help / completion，否则历史 ──
         @self._kb.add(Keys.Up)
-        def _hist_back(event: object) -> None:
+        def _up(event: object) -> None:
             try:
+                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
+                    n = len(self.ui.completion_items)
+                    self.ui.completion_selected_index = (self.ui.completion_selected_index - 1) % n
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                    n = len(self.ui.help_items)
+                    self.ui.command_panel_selected_index = (self.ui.command_panel_selected_index - 1) % n
+                    self._safe_invalidate()
+                    return
                 self._input_buffer.history_backward()
-            except Exception:
-                pass
+            except Exception as e:
+                self._record_ui_error("up", e)
 
+        # ── Down：选 help / completion，否则历史 ──
         @self._kb.add(Keys.Down)
-        def _hist_forward(event: object) -> None:
+        def _down(event: object) -> None:
             try:
+                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
+                    n = len(self.ui.completion_items)
+                    self.ui.completion_selected_index = (self.ui.completion_selected_index + 1) % n
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                    n = len(self.ui.help_items)
+                    self.ui.command_panel_selected_index = (self.ui.command_panel_selected_index + 1) % n
+                    self._safe_invalidate()
+                    return
                 self._input_buffer.history_forward()
-            except Exception:
-                pass
+            except Exception as e:
+                self._record_ui_error("down", e)
 
     # ------------------------------------------------------------------
     # 事件订阅 — 仅更新 UIState，不污染主聊天区
@@ -448,15 +505,24 @@ class DynamicMinionsShell:
             self._record_ui_error("input_changed", e)
 
     def _refresh_completion_state(self) -> None:
-        """调用补全器，将结果写入 UIState 的 completion_items。"""
+        """调用补全器，将结果写入 UIState 并控制命令面板模式。"""
         if not self._completion_enabled:
             self.ui.completion_visible = False
             self.ui.completion_items = []
+            if self.ui.command_panel_mode == "completion":
+                self.ui.command_panel_mode = "blank"
             return
+
+        # help 模式下不覆盖
+        if self.ui.command_panel_mode == "help":
+            return
+
         text = self._input_buffer.text
         if not text.startswith("/"):
             self.ui.completion_visible = False
             self.ui.completion_items = []
+            if self.ui.command_panel_mode == "completion":
+                self.ui.command_panel_mode = "blank"
             return
 
         try:
@@ -472,6 +538,7 @@ class DynamicMinionsShell:
         if not completions:
             self.ui.completion_visible = False
             self.ui.completion_items = []
+            self.ui.command_panel_mode = "blank"
             return
 
         items: list[CompletionItem] = []
@@ -494,11 +561,13 @@ class DynamicMinionsShell:
         if not items:
             self.ui.completion_visible = False
             self.ui.completion_items = []
+            self.ui.command_panel_mode = "blank"
             return
 
         self.ui.completion_items = items
         self.ui.completion_selected_index = 0
         self.ui.completion_visible = True
+        self.ui.command_panel_mode = "completion"
 
     def _scroll_to_bottom(self) -> None:
         """滚动主面板到底部。"""
@@ -609,6 +678,7 @@ class DynamicMinionsShell:
             self._input_buffer.text = ""
             self.ui.completion_visible = False
             self.ui.completion_items = []
+            self.ui.command_panel_mode = "blank"
             if text:
                 self._create_task(self._handle_input(text), "handle_input")
             self._safe_invalidate()
@@ -676,16 +746,21 @@ class DynamicMinionsShell:
             self._record_ui_error("dispatch_command", e)
 
     async def _cmd_help(self) -> None:
-        lines = ["可用命令："]
-        for spec in _CMD_SPECS:
-            alias = f"  别名: {', '.join(spec.aliases)}" if spec.aliases else ""
-            usage = f"  用法: {spec.usage}" if spec.usage else ""
-            lines.append(f"  {spec.command:<12s} {spec.description}")
-            if alias:
-                lines.append(f"                {alias}")
-            if usage:
-                lines.append(f"                {usage}")
-        self.ui.add_system_message("\n".join(lines))
+        self.ui.command_panel_mode = "help"
+        self.ui.command_panel_title = "Browse default commands"
+        self.ui.help_tab = "commands"
+        self.ui.help_items = [
+            {
+                "command": spec.command,
+                "description": spec.description,
+                "usage": spec.usage,
+                "aliases": list(spec.aliases),
+            }
+            for spec in _CMD_SPECS
+        ]
+        self.ui.command_panel_selected_index = 0
+        self.ui.completion_visible = False
+        self.ui.completion_items = []
         self._safe_invalidate()
 
     async def _cmd_debug(self) -> None:
