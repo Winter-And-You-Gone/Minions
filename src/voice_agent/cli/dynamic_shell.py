@@ -228,6 +228,19 @@ class DynamicMinionsShell:
             if msg:
                 self.ui.add_system_message(msg)
 
+        elif etype == "judge.result":
+            provider = event.get("provider", "")
+            should_reply = event.get("should_reply", False)
+            reason = event.get("reason", "")
+            confidence = event.get("confidence", 0.0)
+            self.ui.status_line = (
+                f"Judge[{provider}]: "
+                f"{'reply' if should_reply else 'silent'} "
+                f"conf={confidence:.2f} {reason}"
+            )
+            self._app.invalidate()
+            return
+
         # 更新唤醒会话状态栏
         if hasattr(self._state, "is_wake_session_active") and self._state.is_wake_session_active():
             remain = self._state.seconds_until_wake_session_timeout()

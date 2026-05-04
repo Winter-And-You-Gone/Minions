@@ -14,6 +14,7 @@ from voice_agent.core.llm_client import LLMClient
 from voice_agent.core.agent_core import AgentCore
 from voice_agent.core.wake_name import WakeNameMatcher
 from voice_agent.core.persona_test_cases import PERSONA_TEST_CASES
+from voice_agent.core.local_judge_client import LocalJudgeClient
 from voice_agent.asr.mock_asr import MockASR
 from voice_agent.asr.sherpa_onnx_asr import SherpaOnnxASR
 from voice_agent.output.console_output import handle_console_output
@@ -25,6 +26,8 @@ from voice_agent.cli.dynamic_shell import DynamicMinionsShell
 def build_gate(config: dict) -> InterventionGate:
     ic = config.get("intervention", {})
     thresholds = ic.get("thresholds", {})
+    judge_cfg = config.get("judge", {})
+    judge_thresholds = judge_cfg.get("thresholds", {})
     wake_matcher = WakeNameMatcher.from_config(config)
     return InterventionGate(
         min_text_length=ic.get("min_text_length", 4),
@@ -35,6 +38,27 @@ def build_gate(config: dict) -> InterventionGate:
         threshold_agent=thresholds.get("agent", 60),
         uncertain_action=ic.get("uncertain_action", "judge"),
         wake_matcher=wake_matcher,
+        judge_provider=judge_cfg.get("provider", "rule"),
+        local_judge_min=judge_thresholds.get("local_judge_min", 10),
+        local_judge_max=judge_thresholds.get("local_judge_max", 74),
+    )
+
+
+def build_local_judge(config: dict) -> LocalJudgeClient | None:
+    """根据配置构建 LocalJudgeClient，非 local provider 时返回 None。"""
+    jc = config.get("judge", {})
+    if jc.get("provider", "rule") != "local":
+        return None
+
+    lc = jc.get("local", {})
+    return LocalJudgeClient(
+        enabled=lc.get("enabled", True),
+        api_base=lc.get("api_base", "http://127.0.0.1:11434/v1"),
+        api_key=lc.get("api_key", "ollama"),
+        model=lc.get("model", "qwen3.5:4b"),
+        timeout_seconds=lc.get("timeout_seconds", 6),
+        temperature=lc.get("temperature", 0),
+        max_tokens=lc.get("max_tokens", 256),
     )
 
 
@@ -98,7 +122,8 @@ async def run(
     )
     gate = build_gate(config)
     llm = build_llm(config)
-    agent = AgentCore(bus, state, gate, llm)
+    local_judge = build_local_judge(config)
+    agent = AgentCore(bus, state, gate, llm, local_judge=local_judge)
 
     # 注册事件处理器
     bus.subscribe(handle_console_output)
@@ -138,6 +163,8 @@ async def run(
                 await ws_server.stop()
             await asr_engine.stop()
             await llm.close()
+            if local_judge is not None:
+                await local_judge.close()
 
     bus.subscribe(on_asr_final)
     bus.subscribe(on_command)
@@ -157,6 +184,8 @@ async def run(
         if ws_server:
             await ws_server.stop()
         await llm.close()
+        if local_judge is not None:
+            await local_judge.close()
         logger.info("[系统] voice-agent 已退出")
 
 
@@ -242,7 +271,8 @@ async def run_cli(
     )
     gate = build_gate(config)
     llm = build_llm(config)
-    agent = AgentCore(bus, state, gate, llm)
+    local_judge = build_local_judge(config)
+    agent = AgentCore(bus, state, gate, llm, local_judge=local_judge)
 
     # 麦克风（可选，用于 VU 监测）
     ac = config.get("audio", {})
@@ -282,6 +312,8 @@ async def run_cli(
             await agent.handle_resume()
         elif etype == "command.exit":
             await llm.close()
+            if local_judge is not None:
+                await local_judge.close()
 
     bus.subscribe(on_asr_final)
     bus.subscribe(on_command)
@@ -299,6 +331,8 @@ async def run_cli(
         if asr_engine is not None:
             await asr_engine.stop()
         await llm.close()
+        if local_judge is not None:
+            await local_judge.close()
         logger.info("[系统] voice-agent CLI 已退出")
 
 
@@ -361,7 +395,8 @@ async def run_persona_test(config_path: str) -> None:
     )
     gate = build_gate(config)
     llm = build_llm(config)
-    agent = AgentCore(bus, state, gate, llm)
+    local_judge = build_local_judge(config)
+    agent = AgentCore(bus, state, gate, llm, local_judge=local_judge)
 
     print("=" * 60)
     print("  琉璃川 Persona Test")
@@ -405,10 +440,69 @@ async def run_persona_test(config_path: str) -> None:
 
     finally:
         await llm.close()
+        if local_judge is not None:
+            await local_judge.close()
 
     print("=" * 60)
     print("Persona Test 完成")
     print("详细日志见 logs/persona-test.log")
+
+
+async def run_judge_test(config_path: str, text: str) -> None:
+    """Judge 测试模式：只用 Gate + LocalJudge，不经过完整链路。"""
+    config = get_config(config_path)
+    debug = config.get("app", {}).get("debug", False)
+    setup_logging(debug)
+
+    gate = build_gate(config)
+    local_judge = build_local_judge(config)
+
+    state = ConversationState(
+        _cooldown_seconds=0,
+        _conversation_timeout_seconds=config.get("intervention", {}).get("conversation_timeout_seconds", 60),
+    )
+
+    result = gate.evaluate(text, state, 1.0)
+
+    print("=" * 72)
+    print("  Judge Test")
+    print("=" * 72)
+    print(f"Text: {text}")
+    print(f"Gate: action={result.action.value} score={result.score} reason={result.reason}")
+    print()
+
+    if local_judge is None:
+        print("LocalJudge 未启用。请设置 judge.provider=local")
+        return
+
+    assistant_name = "琉璃川"
+    user_title = "少爷"
+    if gate.wake_matcher is not None:
+        cfg = gate.wake_matcher.config
+        assistant_name = cfg.name
+        user_title = cfg.user_title
+
+    try:
+        judge = await local_judge.judge(
+            text=result.text or text,
+            state=state.mode,
+            wake_session_active=state.is_wake_session_active(),
+            recent_context="无",
+            gate_action=result.action.value,
+            score=result.score,
+            reason=result.reason,
+            assistant_name=assistant_name,
+            user_title=user_title,
+        )
+        print(f"LocalJudge target: {judge.target}")
+        print(f"LocalJudge should_reply: {judge.should_reply}")
+        print(f"LocalJudge should_end_wake_session: {judge.should_end_wake_session}")
+        print(f"LocalJudge confidence: {judge.confidence}")
+        print(f"LocalJudge reason: {judge.reason}")
+        print()
+        print(f"raw: {judge.raw}")
+    finally:
+        await local_judge.close()
 
 
 def main() -> None:
@@ -443,6 +537,11 @@ def main() -> None:
         action="store_true",
         help="测试琉璃川人格 Prompt 效果，不经过 ASR",
     )
+    parser.add_argument(
+        "--judge-test",
+        default=None,
+        help="测试本地 Judge，例如 --judge-test \"这剧情怎么这样\"",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -457,6 +556,8 @@ def main() -> None:
             asyncio.run(run_asr_test(args.config, args.asr_test, args.vad_threshold))
         elif args.persona_test:
             asyncio.run(run_persona_test(args.config))
+        elif args.judge_test:
+            asyncio.run(run_judge_test(args.config, args.judge_test))
         elif args.cli:
             asyncio.run(run_cli(args.config, args.asr, args.vad_threshold))
         else:

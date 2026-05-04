@@ -77,6 +77,20 @@ llm:
   model: "${LLM_MODEL}"
   timeout_seconds: 30
 
+judge:
+  provider: "local"   # rule / local / llm
+  local:
+    enabled: true
+    api_base: "http://127.0.0.1:11434/v1"
+    api_key: "ollama"
+    model: "qwen3.5:4b"
+    timeout_seconds: 6
+    temperature: 0
+    max_tokens: 256
+  thresholds:
+    local_judge_min: 10
+    local_judge_max: 74
+
 assistant:
   name: "琉璃川"
   user_title: "少爷"

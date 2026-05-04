@@ -16,6 +16,7 @@ class GateAction(str, Enum):
     SILENT = "silent"
     BUBBLE = "bubble"
     JUDGE = "judge"
+    LOCAL_JUDGE = "local_judge"
     AGENT = "agent"
     TOOL = "tool"
     CONFIRM = "confirm"
@@ -62,8 +63,8 @@ FILLER_WORDS = [
 
 # 强触发词加分（直接 agent）
 STRONG_TRIGGER_SCORE = 65
-# 问题触发词加分（直接 agent）
-QUESTION_TRIGGER_SCORE = 60
+# 问题触发词加分（规则判断）
+QUESTION_TRIGGER_SCORE = 45
 # 弱触发词加分（bubble / judge）
 WEAK_TRIGGER_SCORE = 25
 # 句尾问号加分
@@ -82,7 +83,9 @@ COLLOQUIAL_PENALTY = -30
 # 唤醒名检测得分（直接 Agent）
 WAKE_NAME_SCORE = 100
 # 唤醒会话内追问加分
-WAKE_SESSION_SCORE = 75
+WAKE_SESSION_SCORE = 25
+# 连续追问触发词加分
+FOLLOWUP_TRIGGER_SCORE = 50
 
 # 连续追问触发词 — 唤醒或 active 会话内短句也能进 Agent
 FOLLOWUP_TRIGGERS = [
@@ -117,6 +120,24 @@ END_SESSION_TRIGGERS = [
     "我跟别人说",
 ]
 
+# 疑似转向别人/背景触发词
+TURN_AWAY_TRIGGERS = [
+    "我跟你说",
+    "我跟他说",
+    "我跟她说",
+    "你们看",
+    "你看他",
+    "他说",
+    "她说",
+    "他们说",
+    "电视里",
+    "这个演员",
+    "这个角色",
+    "剧情",
+    "弹幕",
+    "刚才那个人",
+]
+
 
 @dataclass
 class InterventionGate:
@@ -133,6 +154,9 @@ class InterventionGate:
     threshold_agent: int = 60
     uncertain_action: str = "judge"
     wake_matcher: object | None = None
+    judge_provider: str = "rule"
+    local_judge_min: int = 10
+    local_judge_max: int = 74
     _last_result: GateResult | None = field(default=None, init=False)
 
     def evaluate(
@@ -181,6 +205,22 @@ class InterventionGate:
 
         # --- 分数 → action ---
         action = self._score_to_action(score)
+
+        # wake_session 内不确定内容强制走 judge / local_judge
+        in_wake = hasattr(state, "is_wake_session_active") and state.is_wake_session_active()
+        reason_text = "; ".join(reasons)
+
+        has_direct_intent = any(
+            key in reason_text
+            for key in ["强触发词", "问题触发词", "连续追问", "句尾问号"]
+        )
+
+        if in_wake and not has_direct_intent:
+            if self.judge_provider == "local":
+                action = GateAction.LOCAL_JUDGE
+            else:
+                action = GateAction.JUDGE
+
         reason = "; ".join(reasons) if reasons else "无特殊匹配"
 
         result = GateResult(action=action, score=score, reason=reason, text=text)
@@ -229,6 +269,13 @@ class InterventionGate:
 
         # 冷却中 — 强触发词或明确问题可绕过
         if state.is_in_cooldown():
+            in_wake = hasattr(state, "is_wake_session_active") and state.is_wake_session_active()
+
+            # wake_session 内不要因为 cooldown 直接静音。
+            # 用户经常会连续追问，例如"继续""然后呢""那怎么修"。
+            if in_wake:
+                return None
+
             if not self._has_bypass_trigger(text):
                 return GateResult(GateAction.SILENT, 0, "冷却中")
 
@@ -290,8 +337,15 @@ class InterventionGate:
         # 连续追问触发词（加分，不阻断其他匹配）
         for word in FOLLOWUP_TRIGGERS:
             if word in text:
-                score += 55
+                score += FOLLOWUP_TRIGGER_SCORE
                 reasons.append(f"连续追问: {word}")
+                break
+
+        # 疑似转向别人/背景（减分，不直接 silent）
+        for word in TURN_AWAY_TRIGGERS:
+            if word in text:
+                score -= 40
+                reasons.append(f"疑似转向别人/背景: {word}")
                 break
 
         # 普通陈述句惩罚
@@ -327,6 +381,12 @@ class InterventionGate:
     def _score_to_action(self, score: int) -> GateAction:
         if score < self.threshold_bubble:
             return GateAction.SILENT
+
+        # 模糊区间 → 本地 Judge（只在未达到 agent 阈值时）
+        if self.judge_provider == "local" and score < self.threshold_agent:
+            if self.local_judge_min <= score <= self.local_judge_max:
+                return GateAction.LOCAL_JUDGE
+
         if score < self.threshold_judge:
             if self.uncertain_action == "silent":
                 return GateAction.SILENT

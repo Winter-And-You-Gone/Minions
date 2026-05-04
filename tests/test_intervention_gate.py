@@ -124,10 +124,13 @@ def test_open_browser_triggers_agent():
     assert result.action == GateAction.AGENT
 
 
-def test_weird_plot_triggers_bubble_or_judge():
+def test_weird_plot_silent_or_low():
+    """TURN_AWAY_TRIGGERS 减分后未唤醒状态下可能 silent。"""
     gate = InterventionGate()
     result = gate.evaluate("这剧情也太离谱了", make_state())
-    assert result.action in (GateAction.BUBBLE, GateAction.JUDGE, GateAction.AGENT)
+    # 弱触发 +25, 转向 -40 = -15 → < threshold_bubble → SILENT
+    # 未唤醒状态下转向内容大概率 silent
+    assert result.action in (GateAction.SILENT, GateAction.BUBBLE, GateAction.JUDGE)
 
 
 def test_question_mark_adds_score():
@@ -200,7 +203,7 @@ def test_cooldown_bypass_for_question_mark():
     ("嗯", GateAction.SILENT),
     ("这个报错是什么意思", GateAction.AGENT),
     ("帮我看一下这个问题", GateAction.AGENT),
-    ("你觉得这个方案怎么样", GateAction.AGENT),
+    ("你觉得这个方案怎么样", GateAction.JUDGE),
     ("提醒我等会儿吃饭", GateAction.AGENT),
     ("打开浏览器", GateAction.AGENT),
     ("帮 我 看 一 下", GateAction.AGENT),

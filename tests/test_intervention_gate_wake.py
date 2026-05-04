@@ -61,7 +61,7 @@ class TestWakeSessionFollowup:
         gate = InterventionGate()
 
         result = gate.evaluate("然后呢", state, 1.0)
-        assert result.score >= 130  # 55 + 75
+        assert result.score >= 75  # 50 (FOLLOWUP_TRIGGER_SCORE) + 25 (WAKE_SESSION_SCORE)
 
     def test_no_wake_session_lower_score(self) -> None:
         state = ConversationState()

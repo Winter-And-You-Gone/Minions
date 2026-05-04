@@ -11,7 +11,7 @@ class AgentCore:
     """Agent 核心处理器。
 
     流程：
-      ASR final text → InterventionGate → (可选 LLM judge) → (可选 LLM agent) → 发布 agent.reply
+      ASR final text → InterventionGate → (可选 Local/LLM judge) → (可选 LLM agent) → 发布 agent.reply
     """
 
     def __init__(
@@ -20,11 +20,13 @@ class AgentCore:
         state: ConversationState,
         gate: InterventionGate,
         llm: LLMClient,
+        local_judge: object | None = None,
     ) -> None:
         self._bus = event_bus
         self._state = state
         self._gate = gate
         self._llm = llm
+        self._local_judge = local_judge
         self._logger = get_logger()
         self._recent_context: list[str] = []
 
@@ -107,7 +109,65 @@ class AgentCore:
             self._logger.info("[Agent] 唤醒回复: %s", reply)
             return
 
-        # 8. JUDGE → 调用 LLM 二次判断
+        # 8. LOCAL_JUDGE → 调用本地小模型 Judge
+        if gate_result.action == GateAction.LOCAL_JUDGE:
+            should_reply = False
+            assistant_name, user_title = self._assistant_profile()
+
+            if self._local_judge is not None and getattr(self._local_judge, "is_available", False):
+                judge = await self._local_judge.judge(
+                    text=normalized_text,
+                    state=self._state.mode,
+                    wake_session_active=self._state.is_wake_session_active(),
+                    recent_context="\n".join(self._recent_context[-6:]),
+                    gate_action=gate_result.action.value,
+                    score=gate_result.score,
+                    reason=gate_result.reason,
+                    assistant_name=assistant_name,
+                    user_title=user_title,
+                )
+                self._logger.info("[LocalJudge] result=%s", judge)
+
+                await self._bus.publish({
+                    "type": "judge.result",
+                    "provider": "local",
+                    "target": judge.target,
+                    "should_reply": judge.should_reply,
+                    "should_end_wake_session": judge.should_end_wake_session,
+                    "confidence": judge.confidence,
+                    "reason": judge.reason,
+                })
+
+                if judge.should_end_wake_session:
+                    self._state.end_wake_session()
+                    await self._bus.publish({
+                        "type": "state.change",
+                        "state": self._state.mode,
+                        "reason": "local_judge_end_wake_session",
+                    })
+                    return
+
+                should_reply = judge.should_reply
+            else:
+                # local_judge 不可用时回退到主 LLM judge
+                judge = await self._llm.judge_intervention(
+                    normalized_text,
+                    self._state.mode,
+                    self._state.seconds_since_last_reply() < 60,
+                )
+                await self._bus.publish({
+                    "type": "judge.result",
+                    "provider": "llm_fallback",
+                    "should_reply": judge.get("should_reply", False),
+                    "confidence": judge.get("confidence", 0.0),
+                    "reason": judge.get("reason", ""),
+                })
+                should_reply = judge.get("should_reply", False)
+
+            if not should_reply:
+                return
+
+        # 9. JUDGE → 调用 LLM 二次判断
         if gate_result.action == GateAction.JUDGE:
             should_reply = False
 
@@ -161,13 +221,7 @@ class AgentCore:
             return
 
         context = "\n".join(self._recent_context[-5:]) if self._recent_context else ""
-        assistant_name = "琉璃川"
-        user_title = "少爷"
-        if self._gate.wake_matcher is not None:
-            cfg = getattr(self._gate.wake_matcher, "config", None)
-            if cfg:
-                assistant_name = cfg.name
-                user_title = getattr(cfg, "user_title", "少爷")
+        assistant_name, user_title = self._assistant_profile()
         reply = await self._llm.generate_reply(
             normalized_text,
             context,
@@ -192,6 +246,17 @@ class AgentCore:
             "text": reply,
         })
         self._logger.info("[Agent] reply=%s", reply)
+
+    def _assistant_profile(self) -> tuple[str, str]:
+        """获取助手名称和用户称呼。"""
+        assistant_name = "琉璃川"
+        user_title = "少爷"
+        if self._gate.wake_matcher is not None:
+            cfg = getattr(self._gate.wake_matcher, "config", None)
+            if cfg:
+                assistant_name = getattr(cfg, "name", "琉璃川") or "琉璃川"
+                user_title = getattr(cfg, "user_title", "少爷") or "少爷"
+        return assistant_name, user_title
 
     @staticmethod
     def _is_model_info_question(text: str) -> bool:
