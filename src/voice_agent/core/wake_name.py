@@ -10,13 +10,14 @@ from voice_agent.utils.text_normalizer import normalize_text, remove_chinese_spa
 
 @dataclass
 class WakeNameConfig:
-    name: str = "米粒"
-    aliases: list[str] = field(default_factory=list)
+    name: str = "琉璃川"
+    aliases: list[str] = field(default_factory=lambda: ["琉璃川", "琉璃", "六里川", "琉璃酱"])
     enabled: bool = True
     session_seconds: float = 120.0
     silence_timeout_seconds: float = 90.0
     strip_wake_name: bool = True
     allow_llm_turn_away_judge: bool = True
+    user_title: str = "少爷"
 
 
 @dataclass
@@ -44,7 +45,7 @@ class WakeNameMatcher:
         assistant_cfg = config.get("assistant", {})
         wake_cfg = assistant_cfg.get("wake", {})
 
-        name = assistant_cfg.get("name", "米粒")
+        name = assistant_cfg.get("name", "琉璃川")
         aliases = assistant_cfg.get("wake_aliases", [])
         all_aliases = [name, *aliases]
 
@@ -61,6 +62,7 @@ class WakeNameMatcher:
             silence_timeout_seconds=float(wake_cfg.get("silence_timeout_seconds", 90)),
             strip_wake_name=bool(wake_cfg.get("strip_wake_name", True)),
             allow_llm_turn_away_judge=bool(wake_cfg.get("allow_llm_turn_away_judge", True)),
+            user_title=assistant_cfg.get("user_title", "少爷"),
         ))
 
     def detect(self, raw_text: str) -> WakeNameMatch:

@@ -96,7 +96,7 @@ class AgentCore:
 
         # 7. 单独喊名字时本地回复
         if metadata.get("wake_detected") and not metadata.get("text_without_name"):
-            reply = "我在。"
+            reply = "我在呢，少爷～"
             self._state.mark_agent_replied()
             self._state.enter_cooldown()
             self._recent_context.append(f"用户: {text}")
@@ -109,7 +109,7 @@ class AgentCore:
 
         # 8. JUDGE → 调用 LLM 二次判断
         if gate_result.action == GateAction.JUDGE:
-            should_skip_judge = False
+            should_reply = False
 
             # 唤醒会话内可让 LLM 判断是否转向别人
             if self._state.is_wake_session_active():
@@ -130,18 +130,19 @@ class AgentCore:
                         })
                         self._logger.info("[Wake] LLM 判断转向别人，结束唤醒会话")
                         return
-                    # LLM 确认仍在对话，跳过 JUDGE 直接进入 AGENT
-                    should_skip_judge = True
-                    self._logger.info("[Wake] LLM 判断仍在对话，跳过 JUDGE 进入 AGENT")
+                    # LLM 确认仍在对话，直接进入 AGENT
+                    should_reply = True
+                    self._logger.info("[Wake] LLM 判断仍在对话")
 
-            if not should_skip_judge:
+            if not should_reply:
                 judge = await self._llm.judge_intervention(
                     text,
                     self._state.mode,
                     self._state.seconds_since_last_reply() < 60,
                 )
                 self._logger.info("[Judge] result=%s", judge)
-            if not judge.get("should_reply", False):
+                should_reply = judge.get("should_reply", False)
+            if not should_reply:
                 return
 
         # 9. AGENT → 调用 LLM 生成回复
@@ -160,7 +161,21 @@ class AgentCore:
             return
 
         context = "\n".join(self._recent_context[-5:]) if self._recent_context else ""
-        reply = await self._llm.generate_reply(text, context)
+        assistant_name = "琉璃川"
+        user_title = "少爷"
+        if self._gate.wake_matcher is not None:
+            cfg = getattr(self._gate.wake_matcher, "config", None)
+            if cfg:
+                assistant_name = cfg.name
+                user_title = getattr(cfg, "user_title", "少爷")
+        reply = await self._llm.generate_reply(
+            normalized_text,
+            context,
+            state=self._state.mode,
+            wake_session_active=self._state.is_wake_session_active(),
+            assistant_name=assistant_name,
+            user_title=user_title,
+        )
         self._state.mark_agent_replied()
 
         # 保存上下文

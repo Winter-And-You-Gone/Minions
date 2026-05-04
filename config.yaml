@@ -78,12 +78,13 @@ llm:
   timeout_seconds: 30
 
 assistant:
-  name: "米粒"
+  name: "琉璃川"
+  user_title: "少爷"
   wake_aliases:
-    - "米粒"
-    - "迷你"
-    - "米妮"
-    - "小米"
+    - "琉璃川"
+    - "琉璃"
+    - "六里川"
+    - "琉璃酱"
   wake:
     enabled: true
     session_seconds: 120
