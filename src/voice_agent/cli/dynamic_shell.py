@@ -8,12 +8,12 @@ from pathlib import Path
 
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 
-from voice_agent.cli.formatters import format_chat, vu_bar
 from voice_agent.cli.shell import (
     _get_mic_info,
     _list_devices_str,
@@ -21,12 +21,12 @@ from voice_agent.cli.shell import (
     _resolve_device,
 )
 from voice_agent.cli.tui_renderer import (
-    format_chat_panel,
+    format_completion_panel,
+    format_footer_bar,
+    format_home_panel,
     format_input_prompt,
-    format_side_panel,
-    format_top_bar,
 )
-from voice_agent.cli.ui_state import GateView, LLMView, UIState
+from voice_agent.cli.ui_state import CompletionItem, GateView, LLMView, UIState
 from voice_agent.cli.command_completer import (
     COMMAND_SPECS as _CMD_SPECS,
     MinionsCommandCompleter,
@@ -107,6 +107,8 @@ class DynamicMinionsShell:
             completer=MinionsCommandCompleter(),
             complete_while_typing=True,
         )
+        # 监听文本变化以刷新补全面板
+        self._input_buffer.on_text_changed += self._on_input_changed
 
         # 先构建快捷键，再构建 UI（UI 需要 _kb）
         self._build_key_bindings()
@@ -126,41 +128,19 @@ class DynamicMinionsShell:
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        # 顶部状态栏
-        top_bar = Window(
-            FormattedTextControl(lambda: format_top_bar(self.ui)),
-            height=1,
-        )
-
-        separator_top = Window(height=1, char="─")
-
-        # 左侧聊天区
-        self._chat_win = Window(
-            FormattedTextControl(lambda: format_chat_panel(self.ui)),
+        # 主面板：LOGO + 欢迎 + 聊天消息 + 提示
+        self._home_win = Window(
+            FormattedTextControl(lambda: format_home_panel(self.ui)),
             wrap_lines=True,
             always_hide_cursor=True,
         )
 
-        # 右侧状态面板
-        side_panel = Window(
-            FormattedTextControl(lambda: format_side_panel(self.ui)),
-            width=40,
-            wrap_lines=True,
-            always_hide_cursor=True,
-        )
+        sep_top = Window(height=1, char="─")
 
-        body = VSplit([
-            self._chat_win,
-            Window(width=1, char="│"),
-            side_panel,
-        ])
-
-        separator_bottom = Window(height=1, char="─")
-
-        # 底部输入行
+        # 输入行
         input_prompt = Window(
             FormattedTextControl(lambda: format_input_prompt(self.ui)),
-            width=18,
+            width=4,
             height=1,
             dont_extend_width=True,
         )
@@ -170,12 +150,31 @@ class DynamicMinionsShell:
         )
         input_row = VSplit([input_prompt, self._input_window])
 
+        sep_mid = Window(height=1, char="─")
+
+        # 补全面板（固定 6 行）
+        self._completion_win = Window(
+            FormattedTextControl(lambda: format_completion_panel(self.ui)),
+            height=self.ui.completion_reserved_rows,
+            wrap_lines=True,
+        )
+
+        sep_bot = Window(height=1, char="─")
+
+        # 底部状态栏
+        footer = Window(
+            FormattedTextControl(lambda: format_footer_bar(self.ui)),
+            height=1,
+        )
+
         root = HSplit([
-            top_bar,
-            separator_top,
-            body,
-            separator_bottom,
+            self._home_win,
+            sep_top,
             input_row,
+            sep_mid,
+            self._completion_win,
+            sep_bot,
+            footer,
         ])
 
         self._layout = Layout(root)
@@ -187,9 +186,6 @@ class DynamicMinionsShell:
             key_bindings=self._kb,
             mouse_support=False,
         )
-        self._app.bottom_toolbar = lambda: [
-            ("ansibrightblack", " / 输入命令 · Tab 补全 · Enter 执行 · Ctrl+C 退出 · /help 查看全部命令 "),
-        ]
 
     def _build_key_bindings(self) -> None:
         from prompt_toolkit.key_binding import KeyBindings
@@ -198,6 +194,17 @@ class DynamicMinionsShell:
 
         @self._kb.add(Keys.Enter)
         def _accept(event: object) -> None:
+            # 如果有补全项且可见，插入选中的补全到输入框
+            if self.ui.completion_visible and self.ui.completion_items:
+                idx = self.ui.completion_selected_index
+                if idx < len(self.ui.completion_items):
+                    text = self.ui.completion_items[idx].text
+                    self._input_buffer.text = text + " "
+                    self._input_buffer.cursor_position = len(text) + 1
+                    self.ui.completion_visible = False
+                    self.ui.completion_items = []
+                    self._app.invalidate()
+                    return
             self._accept_buffer()
 
         @self._kb.add(Keys.ControlC)
@@ -205,20 +212,23 @@ class DynamicMinionsShell:
             asyncio.create_task(self._cmd_exit())
 
         @self._kb.add(Keys.Tab)
-        def _complete(event: object) -> None:
-            buff = self._input_buffer
-            if buff.complete_state:
-                buff.complete_next()
+        def _complete_next(event: object) -> None:
+            if self.ui.completion_visible and self.ui.completion_items:
+                n = len(self.ui.completion_items)
+                self.ui.completion_selected_index = (self.ui.completion_selected_index + 1) % n
+                self._app.invalidate()
             else:
-                buff.start_completion(select_first=True)
+                self._refresh_completion_state()
+                if self.ui.completion_visible:
+                    self.ui.completion_selected_index = 0
+                    self._app.invalidate()
 
         @self._kb.add(Keys.BackTab)
         def _complete_prev(event: object) -> None:
-            buff = self._input_buffer
-            if buff.complete_state:
-                buff.complete_previous()
-            else:
-                buff.start_completion(select_first=True)
+            if self.ui.completion_visible and self.ui.completion_items:
+                n = len(self.ui.completion_items)
+                self.ui.completion_selected_index = (self.ui.completion_selected_index - 1) % n
+                self._app.invalidate()
 
         @self._kb.add(Keys.Up)
         def _hist_back(event: object) -> None:
@@ -366,9 +376,42 @@ class DynamicMinionsShell:
     def unsubscribe(self) -> None:
         self._bus.unsubscribe(self.on_event)
 
+    def _on_input_changed(self, buf: Buffer) -> None:
+        """输入框文本变化时刷新补全面板。"""
+        self._refresh_completion_state()
+        self._app.invalidate()
+
+    def _refresh_completion_state(self) -> None:
+        """调用补全器，将结果写入 UIState 的 completion_items。"""
+        text = self._input_buffer.text
+        if not text.startswith("/"):
+            self.ui.completion_visible = False
+            self.ui.completion_items = []
+            return
+
+        completer = MinionsCommandCompleter()
+        doc = Document(text=text, cursor_position=len(text))
+        completions = list(completer.get_completions(doc, None))
+
+        if not completions:
+            self.ui.completion_visible = False
+            self.ui.completion_items = []
+            return
+
+        self.ui.completion_items = [
+            CompletionItem(
+                text=c.text,
+                display=getattr(c, "display", c.text),
+                display_meta=getattr(c, "display_meta", ""),
+            )
+            for c in completions
+        ]
+        self.ui.completion_selected_index = 0
+        self.ui.completion_visible = True
+
     def _scroll_to_bottom(self) -> None:
-        """滚动聊天窗口到底部。"""
-        self._chat_win.vertical_scroll = 999999
+        """滚动主面板到底部。"""
+        self._home_win.vertical_scroll = 999999
 
     # ------------------------------------------------------------------
     # 启动 / 停止

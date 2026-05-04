@@ -1,187 +1,150 @@
-"""OpenCode 风格 TUI 渲染器 — 将 UIState 渲染为 prompt_toolkit formatted text。"""
+"""Command-palette 风格 TUI 渲染器 — Home 面板 · 输入行 · 补全区 · 底部状态栏。"""
 
 from __future__ import annotations
 
-import math
-
 from voice_agent.cli.ui_state import UIState, MessageRole
-from voice_agent.cli.formatters import vu_bar
+
+# ── LOGO ──────────────────────────────────────────────────────────────────
+# 像素风吉祥物, 15 字符宽, 7 行高, 粉红色
+
+LOGO_LINES: list[tuple[str, str]] = [
+    ("bold fg:#ff6eb4", "  ╭─────────╮  "),
+    ("bold fg:#ff6eb4", "  │  ╱◕‿◕╲  │  "),
+    ("bold fg:#ff6eb4", "  │ ╱     ╲ │  "),
+    ("bold fg:#ff6eb4", "  │ │ ∞ ∞ │ │  "),
+    ("bold fg:#ff6eb4", "  │ ╲     ╱ │  "),
+    ("bold fg:#ff6eb4", "  │  ╲___╱  │  "),
+    ("bold fg:#ff6eb4", "  ╰─────────╯  "),
+]
+
+_DEFAULT_TIPS = (
+    "/help  查看所有命令",
+    "Tab / Shift+Tab  浏览补全",
+    "直接输入文字与 AI 对话",
+    "Ctrl+C  安全退出",
+)
 
 
-def format_top_bar(state: UIState) -> list[tuple[str, str]]:
-    """顶部状态栏：Minions / 琉璃川  ● Listening  ASR:xxx  Judge:xxx  LLM:xxx"""
+# ── Home 面板 ─────────────────────────────────────────────────────────────
+
+def format_home_panel(state: UIState) -> list[tuple[str, str]]:
+    """主面板：LOGO → 欢迎 → 运行时 → 聊天消息 → 提示/健康。"""
     frags: list[tuple[str, str]] = []
 
-    # 左侧：应用名 / 助手名
-    frags.append(("bold cyan", f" {state.app_name}"))
-    frags.append(("bold white", f" {state.assistant_name}  "))
+    # LOGO
+    for style, line in LOGO_LINES:
+        frags.append((style, line + "\n"))
 
-    # 状态指示
-    if state.paused:
-        frags.append(("red", "● Paused"))
-    elif state.asr.status in ("error",):
-        frags.append(("red", "● Error"))
-    elif state.asr.status in ("recognizing",):
-        frags.append(("yellow", "● Recognizing"))
-    elif state.asr.status in ("listening",):
-        frags.append(("green", "● Listening"))
-    else:
-        frags.append(("ansibrightblack", "● Idle"))
+    # 欢迎标题
+    title = f"  ✦ {state.app_name}"
+    if state.version_text:
+        title += f"  {state.version_text}"
+    frags.append(("bold cyan", title + "\n"))
+    frags.append(("bold white", f"  Welcome back, {state.assistant_name}!\n"))
+    frags.append(("ansibrightblack", f"  {'─' * 35}\n"))
 
-    # ASR 引擎
-    frags.append(("ansibrightblack", f"  ASR:{state.asr_engine}"))
-
-    # Judge
-    if state.judge_provider == "local":
-        frags.append(("ansibrightblack", f"  Judge:{state.judge_model}"))
-    else:
-        frags.append(("ansibrightblack", "  Judge:rule"))
-
-    # LLM
+    # 运行时信息
     llm_label = state.llm_model or state.llm.model or "mock"
-    frags.append(("ansibrightblack", f"  LLM:{llm_label}"))
+    frags.append(("ansibrightblack", f"  ASR:   {state.asr_engine}\n"))
+    frags.append(("ansibrightblack", f"  Judge: {state.judge_model} ({state.judge_provider})\n"))
+    frags.append(("ansibrightblack", f"  LLM:   {llm_label}\n"))
+    frags.append(("ansibrightblack", f"  Mode:  {state.conversation_mode}\n"))
 
-    return frags
-
-
-def format_chat_panel(state: UIState) -> list[tuple[str, str]]:
-    """左侧聊天区：只显示用户和琉璃川的对话。"""
-    frags: list[tuple[str, str]] = []
-
-    if not state.messages:
-        frags.append(("ansibrightblack", "等待交互… 输入文字或直接说话\n"))
-        return frags
-
-    if state.hidden_message_count > 0:
-        frags.append(("ansibrightblack", f"… 已折叠 {state.hidden_message_count} 条更早消息\n"))
-
-    for msg in state.visible_messages:
-        if msg.role == MessageRole.USER:
-            frags.append(("bold cyan", f"你：{msg.text}\n"))
-        elif msg.role == MessageRole.ASSISTANT:
-            prefix = f"{state.assistant_name}：" if state.assistant_name else "AI："
-            frags.append(("green", f"{prefix}{msg.text}\n"))
-        elif msg.role == MessageRole.SYSTEM:
-            frags.append(("ansiyellow", f"• {msg.text}\n"))
-
-    if state.error_line:
-        frags.append(("red", f"✗ {state.error_line}\n"))
-
-    return frags
-
-
-def format_side_panel(state: UIState) -> list[tuple[str, str]]:
-    """右侧状态面板。"""
-    frags: list[tuple[str, str]] = []
-
-    # ── Status ──
-    frags.append(("bold underline", "Status"))
-    frags.append(("", "\n"))
-
-    # Wake
-    if state.wake_active:
-        frags.append(("green", f"  Wake: active {state.wake_remaining_seconds:.0f}s"))
-    else:
-        frags.append(("ansibrightblack", "  Wake: inactive"))
-    frags.append(("", "\n"))
-
-    # Mode
-    mode_style = {"active_chat": "green", "cooldown": "yellow", "paused": "red"}.get(
-        state.conversation_mode, "ansibrightblack"
-    )
-    frags.append((mode_style, f"  Mode: {state.conversation_mode}"))
-    frags.append(("", "\n"))
-
-    # Gate
-    g = state.latest_gate
-    if g.action:
-        gate_style = {
-            "agent": "green", "local_judge": "yellow", "judge": "yellow",
-            "silent": "ansibrightblack", "bubble": "ansiyellow",
-        }.get(g.action, "")
-        frags.append((gate_style, f"  Gate: {g.action} score={g.score}"))
-    else:
-        frags.append(("ansibrightblack", "  Gate: waiting"))
-    frags.append(("", "\n"))
-
-    # Judge
-    if state.latest_judge_provider:
-        tag = "reply" if state.latest_judge_should_reply else "silent"
-        jstyle = "green" if state.latest_judge_should_reply else "ansibrightblack"
-        frags.append((jstyle, f"  Judge: {tag}"))
-        frags.append(("", f" conf={state.latest_judge_confidence:.2f}"))
-        if state.latest_judge_target:
-            frags.append(("", f" target={state.latest_judge_target}"))
-    else:
-        frags.append(("ansibrightblack", "  Judge: -"))
-    frags.append(("", "\n"))
-
-    # ASR
-    asr_status_style = {
-        "listening": "green", "recognizing": "yellow",
-        "loaded": "green", "loading": "yellow", "error": "red",
-    }.get(state.asr.status, "ansibrightblack")
-    frags.append((asr_status_style, f"  ASR: {state.asr.status}"))
-    frags.append(("", "\n"))
-
-    # Mic
+    # 麦克风 VU (仅在监测时显示)
     if state.mic.monitoring:
-        bar = vu_bar(state.mic.rms, width=10)
-        frags.append(("ansimagenta", f"  Mic: {bar} {state.mic.rms:.4f}"))
-    else:
-        frags.append(("ansibrightblack", "  Mic: stopped"))
-    frags.append(("", "\n"))
+        from voice_agent.cli.formatters import vu_bar
+        bar = vu_bar(state.mic.rms, width=15)
+        frags.append(("ansimagenta", f"  Mic:   {bar}  {state.mic.rms:.4f}\n"))
 
-    # ── Runtime ──
-    frags.append(("", "\n"))
-    frags.append(("bold underline", "Runtime"))
-    frags.append(("", "\n"))
-
-    llm_label = state.llm_model or state.llm.model or "mock"
-    llm_style = "green" if state.llm.available else "yellow"
-    frags.append((llm_style, f"  Main LLM: {llm_label}"))
-    frags.append(("", "\n"))
-
-    jm = state.judge_model or "-"
-    frags.append(("ansibrightblack", f"  Local Judge: {jm}"))
-    frags.append(("", "\n"))
-
-    frags.append(("ansibrightblack", "  Logs: logs/minions.log"))
-    frags.append(("", "\n"))
-
-    # ── Health ──
-    if state.health_items:
+    # 聊天消息
+    if state.messages:
         frags.append(("", "\n"))
-        frags.append(("bold underline", "Health"))
+        frags.append(("bold underline", "  ── Chat ──\n"))
+        if state.hidden_message_count > 0:
+            frags.append(("ansibrightblack", f"  … 已折叠 {state.hidden_message_count} 条更早消息\n"))
+        for msg in state.visible_messages:
+            if msg.role == MessageRole.USER:
+                frags.append(("bold cyan", f"  你：{msg.text}\n"))
+            elif msg.role == MessageRole.ASSISTANT:
+                prefix = f"  {state.assistant_name}：" if state.assistant_name else "  AI："
+                frags.append(("green", f"{prefix}{msg.text}\n"))
+            elif msg.role == MessageRole.SYSTEM:
+                frags.append(("ansiyellow", f"  • {msg.text}\n"))
+
+    # 提示（仅在没有消息时显示，节省空间）
+    if not state.messages:
         frags.append(("", "\n"))
-        for item in state.health_items:
-            ok = getattr(item, "ok", False)
-            name = getattr(item, "name", "?")
-            msg = getattr(item, "message", "")
-            if ok:
-                frags.append(("green", f"  ✓ {name}"))
-            elif item.level == "error":
-                frags.append(("red", f"  ✗ {name}"))
-            else:
-                frags.append(("yellow", f"  ! {name}"))
+        frags.append(("bold underline", "  ── Tips ──\n"))
+        tips = state.tips_lines if hasattr(state, "tips_lines") and state.tips_lines else _DEFAULT_TIPS
+        for tip in tips:
+            frags.append(("ansibrightblack", f"  · {tip}\n"))
+
+        # 健康检查
+        if state.health_items:
             frags.append(("", "\n"))
+            frags.append(("bold underline", "  ── Health ──\n"))
+            for item in state.health_items:
+                ok = getattr(item, "ok", False)
+                name = getattr(item, "name", "?")
+                level = getattr(item, "level", "info")
+                mark = "✓" if ok else ("✗" if level == "error" else "!")
+                style = "green" if ok else ("red" if level == "error" else "yellow")
+                frags.append((style, f"  {mark} {name}\n"))
 
-    # ── Notices ──
-    if state.notifications:
-        frags.append(("", "\n"))
-        frags.append(("bold underline", "Notices"))
-        frags.append(("", "\n"))
-        for note in state.notifications[-state.max_notifications:]:
-            frags.append(("ansibrightblack", f"  · {note}"))
-            frags.append(("", "\n"))
+    # 错误信息
+    if state.error_line:
+        frags.append(("red", f"  ✗ {state.error_line}\n"))
 
     return frags
 
+
+# ── 输入提示 ──────────────────────────────────────────────────────────────
 
 def format_input_prompt(state: UIState) -> list[tuple[str, str]]:
-    """底部输入提示符。"""
+    """底部输入提示符，统一为 ' > '。"""
     if state.paused:
-        return [("red", "暂停 > ")]
-    if state.assistant_name:
-        return [("bold cyan", f"{state.assistant_name} > ")]
-    return [("bold cyan", "> ")]
+        return [("red", " ⏸ ")]
+    return [("bold cyan", " > ")]
+
+
+# ── 补全面板 ──────────────────────────────────────────────────────────────
+
+def format_completion_panel(state: UIState) -> list[tuple[str, str]]:
+    """固定 6 行补全面板。没有补全时保持空白。"""
+    frags: list[tuple[str, str]] = []
+    items = state.completion_items
+    selected = state.completion_selected_index
+    rows = state.completion_reserved_rows
+
+    if not items or not state.completion_visible:
+        for _ in range(rows):
+            frags.append(("", " " * 80 + "\n"))
+        return frags
+
+    for i in range(rows):
+        if i < len(items):
+            item = items[i]
+            prefix = "▸ " if i == selected else "  "
+            style = "bold cyan" if i == selected else "ansibrightblack"
+            line = f"{prefix}{item.display:<15s} — {item.display_meta}"
+            frags.append((style, line.ljust(80) + "\n"))
+        else:
+            frags.append(("", " " * 80 + "\n"))
+
+    return frags
+
+
+# ── 底部状态栏 ────────────────────────────────────────────────────────────
+
+def format_footer_bar(state: UIState) -> list[tuple[str, str]]:
+    """底部状态栏：左侧模式/状态，右侧模型信息。"""
+    left = state.footer_left or f"{state.app_name} | {state.conversation_mode}"
+    right = state.footer_right or ""
+
+    if state.paused:
+        left = "⏸  PAUSED"
+
+    padding = max(0, 80 - len(left) - len(right))
+    line = left + " " * padding + right
+
+    return [("reverse", line)]

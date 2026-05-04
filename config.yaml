@@ -1,49 +1,33 @@
 app:
-  name: "Minions"
+  name: Minions
   debug: true
-  default_mode: "tui"
-
+  default_mode: tui
 audio:
   sample_rate: 16000
   channels: 1
   chunk_ms: 100
   device: 1
-
 asr:
-  engine: "sherpa-onnx"
-  language: "zh"
-  mode: "offline-vad"
-
+  engine: sherpa-onnx
+  language: zh
+  mode: offline-vad
   sherpa_onnx:
     enabled: true
-
-    # 模型类型（sense_voice / paraformer / whisper / transducer）
-    # 留空时根据 model 文件名自动检测
-    type: "sense_voice"
-    language: "zh"
+    type: sense_voice
+    language: zh
     use_itn: true
-
-    # offline recognizer 模型路径
-    model_dir: "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
-    tokens: "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt"
-    model: "./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx"
-
-    # 可选：transducer 类模型需要 encoder/decoder/joiner
-    encoder: ""
-    decoder: ""
-    joiner: ""
-
-    # 解码配置
+    model_dir: ./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
+    tokens: ./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt
+    model: ./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
+    encoder: ''
+    decoder: ''
+    joiner: ''
     num_threads: 2
-    decoding_method: "greedy_search"
-    provider: "cpu"
-
-    # 音频配置（回退到顶层 audio）
+    decoding_method: greedy_search
+    provider: cpu
     sample_rate: 16000
     channels: 1
     chunk_ms: 100
-
-    # 简单 VAD 分段配置
     vad:
       enabled: true
       rms_threshold: 0.008
@@ -51,67 +35,58 @@ asr:
       max_speech_ms: 15000
       silence_timeout_ms: 800
       pre_roll_ms: 300
-
-    # 识别结果过滤
     result:
       min_text_length: 1
       ignore_empty: true
-
 intervention:
   min_text_length: 4
   min_asr_confidence: 0.55
   cooldown_seconds: 5
   conversation_timeout_seconds: 60
-
   thresholds:
     bubble: 15
     judge: 30
     agent: 60
-
-  uncertain_action: "judge"
-
+  uncertain_action: judge
 llm:
   enabled: true
-  provider: "openai_compatible"
-  api_base: "${LLM_API_BASE}"
-  api_key: "${LLM_API_KEY}"
-  model: "${LLM_MODEL}"
+  provider: openai_compatible
+  api_base: ${LLM_API_BASE}
+  api_key: ${LLM_API_KEY}
+  model: ${LLM_MODEL}
   timeout_seconds: 30
-
 judge:
-  provider: "local"   # rule / local / llm
+  provider: local
   local:
     enabled: true
-    api_base: "http://127.0.0.1:11434/v1"
-    api_key: "ollama"
-    model: "qwen3.5:4b"
+    api_base: http://127.0.0.1:11434/v1
+    api_key: ollama
+    model: qwen3.5:4b
     timeout_seconds: 6
     temperature: 0
     max_tokens: 256
   thresholds:
     local_judge_min: 10
     local_judge_max: 74
-
 assistant:
-  name: "琉璃川"
-  user_title: "少爷"
+  name: 西瓜
+  user_title: 少爷
   wake_aliases:
-    - "琉璃川"
-    - "琉璃"
-    - "六里川"
-    - "琉璃酱"
+  - 西瓜
+  - 琉璃川
+  - 琉璃
+  - 六里川
+  - 琉璃酱
   wake:
     enabled: true
-    session_seconds: 120
-    silence_timeout_seconds: 90
+    session_seconds: 120.0
+    silence_timeout_seconds: 90.0
     strip_wake_name: true
     allow_llm_turn_away_judge: true
-
 websocket:
   enabled: true
-  host: "127.0.0.1"
+  host: 127.0.0.1
   port: 8765
-
 privacy:
   save_audio: false
   save_transcript: false

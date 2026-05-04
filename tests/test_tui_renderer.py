@@ -1,64 +1,83 @@
-"""测试 TUI 渲染器基本功能。"""
+"""测试 TUI 渲染器 — home panel / input / completion / footer。"""
 
-from voice_agent.cli.ui_state import UIState
+from voice_agent.cli.ui_state import UIState, CompletionItem
 from voice_agent.cli.tui_renderer import (
-    format_chat_panel,
+    LOGO_LINES,
+    format_completion_panel,
+    format_footer_bar,
+    format_home_panel,
     format_input_prompt,
-    format_side_panel,
-    format_top_bar,
 )
 
 
-def test_top_bar_returns_fragments():
+# ── home panel ────────────────────────────────────────────────────────────
+
+def test_home_panel_returns_fragments():
     state = UIState()
-    result = format_top_bar(state)
+    result = format_home_panel(state)
     assert result
     assert isinstance(result, list)
     assert all(isinstance(f, tuple) and len(f) == 2 for f in result)
 
 
-def test_chat_panel_returns_fragments():
+def test_home_panel_contains_logo():
     state = UIState()
-    result = format_chat_panel(state)
-    assert result
-    assert isinstance(result, list)
+    result = format_home_panel(state)
+    text = "".join(t for _, t in result)
+    # LOGO lines should contain box-drawing chars
+    assert "╭" in text or "◕" in text or "∞" in text
 
 
-def test_chat_panel_shows_user_and_assistant():
+def test_home_panel_contains_welcome():
     state = UIState()
-    state.assistant_name = "琉璃川"
+    state.app_name = "Minions"
+    state.assistant_name = "西瓜"
+    result = format_home_panel(state)
+    text = "".join(t for _, t in result)
+    assert "Minions" in text
+    assert "西瓜" in text
+    assert "Welcome back" in text
+
+
+def test_home_panel_shows_chat_messages():
+    state = UIState()
+    state.assistant_name = "西瓜"
     state.add_user_message("你好")
     state.add_assistant_message("我在呢")
-    result = format_chat_panel(state)
+    result = format_home_panel(state)
     text = "".join(t for _, t in result)
     assert "你" in text
-    assert "琉璃川" in text
+    assert "西瓜" in text
+    assert "你好" in text
+    assert "我在呢" in text
 
 
-def test_side_panel_returns_fragments():
+def test_home_panel_shows_system_messages():
     state = UIState()
-    result = format_side_panel(state)
-    assert result
-    assert isinstance(result, list)
-
-
-def test_side_panel_shows_status():
-    state = UIState()
-    state.judge_provider = "local"
-    state.judge_model = "qwen3.5:4b"
-    state.asr_engine = "sherpa-onnx"
-    result = format_side_panel(state)
+    state.add_system_message("系统通知")
+    result = format_home_panel(state)
     text = "".join(t for _, t in result)
-    assert "Status" in text
-    assert "Runtime" in text
+    assert "系统通知" in text
 
+
+def test_home_panel_shows_runtime_info():
+    state = UIState()
+    state.asr_engine = "sherpa-onnx"
+    state.judge_model = "qwen3.5:4b"
+    state.judge_provider = "local"
+    result = format_home_panel(state)
+    text = "".join(t for _, t in result)
+    assert "sherpa-onnx" in text
+    assert "qwen3.5" in text
+
+
+# ── input prompt ──────────────────────────────────────────────────────────
 
 def test_input_prompt_default():
     state = UIState()
-    state.assistant_name = "琉璃川"
     result = format_input_prompt(state)
     text = "".join(t for _, t in result)
-    assert "琉璃川" in text
+    assert ">" in text
 
 
 def test_input_prompt_paused():
@@ -66,4 +85,75 @@ def test_input_prompt_paused():
     state.paused = True
     result = format_input_prompt(state)
     text = "".join(t for _, t in result)
-    assert "暂停" in text
+    assert "⏸" in text or "pause" in text.lower() or "暂停" in text
+
+
+# ── completion panel ──────────────────────────────────────────────────────
+
+def test_completion_panel_empty():
+    state = UIState()
+    result = format_completion_panel(state)
+    assert len(result) == state.completion_reserved_rows
+    # All lines should be blank (whitespace)
+    text = "".join(t for _, t in result)
+    assert text.strip() == ""
+
+
+def test_completion_panel_shows_items():
+    state = UIState()
+    state.completion_visible = True
+    state.completion_items = [
+        CompletionItem(text="/help", display="/help", display_meta="显示帮助"),
+        CompletionItem(text="/status", display="/status", display_meta="查看状态"),
+    ]
+    result = format_completion_panel(state)
+    text = "".join(t for _, t in result)
+    assert "/help" in text
+    assert "/status" in text
+    assert "显示帮助" in text
+
+
+def test_completion_panel_highlights_selected():
+    state = UIState()
+    state.completion_visible = True
+    state.completion_selected_index = 0
+    state.completion_items = [
+        CompletionItem(text="/help", display="/help", display_meta="帮助"),
+        CompletionItem(text="/status", display="/status", display_meta="状态"),
+    ]
+    result = format_completion_panel(state)
+    # First item should have the "▸" marker
+    assert any("▸" in t for _, t in result)
+
+
+# ── footer bar ────────────────────────────────────────────────────────────
+
+def test_footer_bar_returns_fragments():
+    state = UIState()
+    result = format_footer_bar(state)
+    assert result
+    assert isinstance(result, list)
+
+
+def test_footer_bar_shows_app_name():
+    state = UIState()
+    state.app_name = "Minions"
+    result = format_footer_bar(state)
+    text = "".join(t for _, t in result)
+    assert "Minions" in text
+
+
+def test_footer_bar_shows_paused():
+    state = UIState()
+    state.paused = True
+    result = format_footer_bar(state)
+    text = "".join(t for _, t in result)
+    assert "PAUSED" in text or "⏸" in text
+
+
+# ── LOGO ──────────────────────────────────────────────────────────────────
+
+def test_logo_lines_defined():
+    assert LOGO_LINES
+    assert len(LOGO_LINES) >= 5
+    assert all(isinstance(l, tuple) and len(l) == 2 for l in LOGO_LINES)

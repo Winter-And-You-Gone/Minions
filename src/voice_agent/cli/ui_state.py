@@ -19,6 +19,13 @@ class ChatMessage:
 
 
 @dataclass
+class CompletionItem:
+    text: str = ""
+    display: str = ""
+    display_meta: str = ""
+
+
+@dataclass
 class GateView:
     action: str = ""
     score: int = 0
@@ -89,6 +96,20 @@ class UIState:
 
     status_line: str = ""
     error_line: str = ""
+
+    # 命令补全
+    completion_items: list[CompletionItem] = field(default_factory=list)
+    completion_selected_index: int = 0
+    completion_visible: bool = False
+    completion_reserved_rows: int = 6
+
+    # 底部状态栏
+    footer_left: str = ""
+    footer_right: str = ""
+
+    # 主页面板
+    version_text: str = ""
+    tips_lines: list[str] = field(default_factory=list)
 
     def add_notification(self, text: str) -> None:
         if not text:
