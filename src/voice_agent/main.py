@@ -354,6 +354,7 @@ async def run_tui(
     config_path: str,
     asr_override: str | None = None,
     vad_threshold: float | None = None,
+    completion_enabled: bool = True,
 ) -> None:
     """TUI 默认模式：健康检查 + 完整 TUI。"""
     config = get_config(config_path)
@@ -365,6 +366,7 @@ async def run_tui(
         "judge_model": config.get("judge", {}).get("local", {}).get("model", ""),
         "llm_model": config.get("llm", {}).get("model", ""),
         "assistant_name": config.get("assistant", {}).get("name", "琉璃川"),
+        "completion_enabled": completion_enabled,
     }
 
     # 如果 ASR 模型缺失，asr_override 设为 mock 避免崩溃
@@ -594,6 +596,11 @@ def main() -> None:
         default=None,
         help="测试本地 Judge，例如 --judge-test \"这剧情怎么这样\"",
     )
+    parser.add_argument(
+        "--no-completion",
+        action="store_true",
+        help="禁用 TUI 命令补全，用于排查输入崩溃",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -611,11 +618,11 @@ def main() -> None:
         elif args.judge_test:
             asyncio.run(run_judge_test(args.config, args.judge_test))
         elif args.cli:
-            asyncio.run(run_tui(args.config, args.asr, args.vad_threshold))
+            asyncio.run(run_tui(args.config, args.asr, args.vad_threshold, not args.no_completion))
         elif args.headless:
             asyncio.run(run(args.config, args.asr, args.vad_threshold))
         else:
-            asyncio.run(run_tui(args.config, args.asr, args.vad_threshold))
+            asyncio.run(run_tui(args.config, args.asr, args.vad_threshold, not args.no_completion))
     except KeyboardInterrupt:
         pass
     except FileNotFoundError as e:
