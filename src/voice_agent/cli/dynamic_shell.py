@@ -107,6 +107,11 @@ class DynamicMinionsShell:
         self._mic_monitor_task: asyncio.Task | None = None
         self._last_invalidate = 0.0
 
+        # 输入历史浏览状态
+        self._history_browsing = False
+        self._history_index = -1
+        self._history_draft = ""
+
         # 输入缓冲区 — 不使用内置 completer，走自定义补全面板
         self._input_buffer = Buffer(
             accept_handler=self._on_accept,
@@ -211,7 +216,7 @@ class DynamicMinionsShell:
         def _exit_ctrl_q(event: object) -> None:
             self._force_exit(event)
 
-        # ── Enter：补全选择 / help 选中填入 / 提交输入 ──
+        # ── Enter：help 填入 / completion 直接执行 / 提交输入 ──
         @self._kb.add(Keys.Enter)
         def _accept(event: object) -> None:
             try:
@@ -222,25 +227,24 @@ class DynamicMinionsShell:
                         cmd = self.ui.help_items[idx].get("command", "")
                         self._input_buffer.text = cmd + " "
                         self._input_buffer.cursor_position = len(cmd) + 1
+                        self._reset_command_panel_scroll()
                         self.ui.command_panel_mode = "completion"
                         self._refresh_completion_state()
                         self._safe_invalidate()
                         return
 
-                # completion 模式：选中项或直接执行
+                # completion 模式：直接执行选中命令
                 if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
                     idx = self.ui.completion_selected_index
                     if 0 <= idx < len(self.ui.completion_items):
                         item = self.ui.completion_items[idx]
-                        current = self._input_buffer.text.strip()
-                        selected = item.text.strip()
-                        # 如果当前输入已经完全等于选中项，直接执行
-                        if current == selected:
-                            self._accept_buffer()
-                            return
-                        # 否则将选中项填入输入框
-                        self._input_buffer.text = selected + " "
-                        self._input_buffer.cursor_position = len(self._input_buffer.text)
+                        cmd = (item.execute_text or item.text).strip()
+                        self._input_buffer.text = ""
+                        self.ui.completion_visible = False
+                        self.ui.completion_items = []
+                        self.ui.command_panel_mode = "blank"
+                        self._reset_command_panel_scroll()
+                        self._create_task(self._handle_input(cmd), "completion_execute")
                         self._safe_invalidate()
                         return
 
@@ -248,24 +252,33 @@ class DynamicMinionsShell:
             except Exception as e:
                 self._record_ui_error("enter", e)
 
-        # ── Tab：导航 help / completion ──
+        # ── Tab：导航 help / completion（clamp + scroll） ──
         @self._kb.add(Keys.Tab)
         def _complete_next(event: object) -> None:
             try:
                 if self.ui.command_panel_mode == "help" and self.ui.help_items:
-                    n = len(self.ui.help_items)
-                    self.ui.command_panel_selected_index = (self.ui.command_panel_selected_index + 1) % n
+                    last = len(self.ui.help_items) - 1
+                    if self.ui.command_panel_selected_index < last:
+                        self.ui.command_panel_selected_index += 1
+                        self._ensure_panel_index_visible(
+                            self.ui.command_panel_selected_index, len(self.ui.help_items),
+                        )
                     self._safe_invalidate()
                     return
                 if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
-                    n = len(self.ui.completion_items)
-                    self.ui.completion_selected_index = (self.ui.completion_selected_index + 1) % n
+                    last = len(self.ui.completion_items) - 1
+                    if self.ui.completion_selected_index < last:
+                        self.ui.completion_selected_index += 1
+                        self._ensure_panel_index_visible(
+                            self.ui.completion_selected_index, len(self.ui.completion_items),
+                        )
                     self._safe_invalidate()
                     return
                 self._refresh_completion_state()
                 if self.ui.completion_items:
                     self.ui.completion_selected_index = 0
                     self.ui.command_panel_mode = "completion"
+                    self._reset_command_panel_scroll()
                     self._safe_invalidate()
             except Exception as e:
                 self._record_ui_error("tab", e)
@@ -274,71 +287,202 @@ class DynamicMinionsShell:
         def _complete_prev(event: object) -> None:
             try:
                 if self.ui.command_panel_mode == "help" and self.ui.help_items:
-                    n = len(self.ui.help_items)
-                    self.ui.command_panel_selected_index = (self.ui.command_panel_selected_index - 1) % n
+                    if self.ui.command_panel_selected_index > 0:
+                        self.ui.command_panel_selected_index -= 1
+                        self._ensure_panel_index_visible(
+                            self.ui.command_panel_selected_index, len(self.ui.help_items),
+                        )
                     self._safe_invalidate()
                     return
                 if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
-                    n = len(self.ui.completion_items)
-                    self.ui.completion_selected_index = (self.ui.completion_selected_index - 1) % n
+                    if self.ui.completion_selected_index > 0:
+                        self.ui.completion_selected_index -= 1
+                        self._ensure_panel_index_visible(
+                            self.ui.completion_selected_index, len(self.ui.completion_items),
+                        )
                     self._safe_invalidate()
                     return
                 self._refresh_completion_state()
                 if self.ui.completion_items:
                     self.ui.completion_selected_index = 0
                     self.ui.command_panel_mode = "completion"
+                    self._reset_command_panel_scroll()
                     self._safe_invalidate()
             except Exception as e:
                 self._record_ui_error("backtab", e)
 
-        # ── Escape：关闭 help / completion ──
+        # ── Escape：关闭面板 ──
         @self._kb.add(Keys.Escape)
         def _escape(event: object) -> None:
             try:
-                self.ui.command_panel_mode = "blank"
-                self.ui.completion_visible = False
-                self.ui.completion_items = []
-                self.ui.completion_selected_index = 0
-                self.ui.command_panel_selected_index = 0
+                self.ui.clear_command_panel()
                 self._safe_invalidate()
             except Exception as e:
                 self._record_ui_error("escape", e)
 
-        # ── Up：选 help / completion，否则历史 ──
+        # ── Up：选 help/completion / 滚 output / 历史 ──
         @self._kb.add("up", eager=True)
         def _up(event: object) -> None:
             try:
                 if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
-                    n = len(self.ui.completion_items)
-                    self.ui.completion_selected_index = (self.ui.completion_selected_index - 1) % n
+                    if self.ui.completion_selected_index > 0:
+                        self.ui.completion_selected_index -= 1
+                        self._ensure_panel_index_visible(
+                            self.ui.completion_selected_index, len(self.ui.completion_items),
+                        )
                     self._safe_invalidate()
                     return
+
                 if self.ui.command_panel_mode == "help" and self.ui.help_items:
-                    n = len(self.ui.help_items)
-                    self.ui.command_panel_selected_index = (self.ui.command_panel_selected_index - 1) % n
+                    if self.ui.command_panel_selected_index > 0:
+                        self.ui.command_panel_selected_index -= 1
+                        self._ensure_panel_index_visible(
+                            self.ui.command_panel_selected_index, len(self.ui.help_items),
+                        )
                     self._safe_invalidate()
                     return
-                self._input_buffer.history_backward()
+
+                if self.ui.command_panel_mode == "output" and self.ui.command_output_lines:
+                    self._scroll_output_lines(-1)
+                    self._safe_invalidate()
+                    return
+
+                self._history_back()
             except Exception as e:
                 self._record_ui_error("up", e)
 
-        # ── Down：选 help / completion，否则历史 ──
+        # ── Down：选 help/completion / 滚 output / 历史 ──
         @self._kb.add("down", eager=True)
         def _down(event: object) -> None:
             try:
                 if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
-                    n = len(self.ui.completion_items)
-                    self.ui.completion_selected_index = (self.ui.completion_selected_index + 1) % n
+                    last = len(self.ui.completion_items) - 1
+                    if self.ui.completion_selected_index < last:
+                        self.ui.completion_selected_index += 1
+                        self._ensure_panel_index_visible(
+                            self.ui.completion_selected_index, len(self.ui.completion_items),
+                        )
                     self._safe_invalidate()
                     return
+
                 if self.ui.command_panel_mode == "help" and self.ui.help_items:
-                    n = len(self.ui.help_items)
-                    self.ui.command_panel_selected_index = (self.ui.command_panel_selected_index + 1) % n
+                    last = len(self.ui.help_items) - 1
+                    if self.ui.command_panel_selected_index < last:
+                        self.ui.command_panel_selected_index += 1
+                        self._ensure_panel_index_visible(
+                            self.ui.command_panel_selected_index, len(self.ui.help_items),
+                        )
                     self._safe_invalidate()
                     return
-                self._input_buffer.history_forward()
+
+                if self.ui.command_panel_mode == "output" and self.ui.command_output_lines:
+                    self._scroll_output_lines(1)
+                    self._safe_invalidate()
+                    return
+
+                self._history_forward()
             except Exception as e:
                 self._record_ui_error("down", e)
+
+        # ── PageUp ──
+        @self._kb.add("pageup", eager=True)
+        def _page_up(event: object) -> None:
+            try:
+                vis = self._get_visible_rows_for_command_panel()
+                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                    self.ui.command_panel_selected_index = max(0, self.ui.command_panel_selected_index - vis)
+                    self._ensure_panel_index_visible(
+                        self.ui.command_panel_selected_index, len(self.ui.help_items),
+                    )
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
+                    self.ui.completion_selected_index = max(0, self.ui.completion_selected_index - vis)
+                    self._ensure_panel_index_visible(
+                        self.ui.completion_selected_index, len(self.ui.completion_items),
+                    )
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "output" and self.ui.command_output_lines:
+                    self._scroll_output_lines(-vis)
+                    self._safe_invalidate()
+                    return
+            except Exception as e:
+                self._record_ui_error("pageup", e)
+
+        # ── PageDown ──
+        @self._kb.add("pagedown", eager=True)
+        def _page_down(event: object) -> None:
+            try:
+                vis = self._get_visible_rows_for_command_panel()
+                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                    last = len(self.ui.help_items) - 1
+                    self.ui.command_panel_selected_index = min(last, self.ui.command_panel_selected_index + vis)
+                    self._ensure_panel_index_visible(
+                        self.ui.command_panel_selected_index, len(self.ui.help_items),
+                    )
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
+                    last = len(self.ui.completion_items) - 1
+                    self.ui.completion_selected_index = min(last, self.ui.completion_selected_index + vis)
+                    self._ensure_panel_index_visible(
+                        self.ui.completion_selected_index, len(self.ui.completion_items),
+                    )
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "output" and self.ui.command_output_lines:
+                    self._scroll_output_lines(vis)
+                    self._safe_invalidate()
+                    return
+            except Exception as e:
+                self._record_ui_error("pagedown", e)
+
+        # ── Home：跳转到第一个 ──
+        @self._kb.add("home", eager=True)
+        def _home_key(event: object) -> None:
+            try:
+                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                    self.ui.command_panel_selected_index = 0
+                    self._reset_command_panel_scroll()
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
+                    self.ui.completion_selected_index = 0
+                    self._reset_command_panel_scroll()
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "output" and self.ui.command_output_lines:
+                    self._reset_command_panel_scroll()
+                    self._safe_invalidate()
+                    return
+            except Exception as e:
+                self._record_ui_error("home", e)
+
+        # ── End：跳转到最后一个 ──
+        @self._kb.add("end", eager=True)
+        def _end_key(event: object) -> None:
+            try:
+                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                    last = len(self.ui.help_items) - 1
+                    self.ui.command_panel_selected_index = last
+                    self._ensure_panel_index_visible(last, len(self.ui.help_items))
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
+                    last = len(self.ui.completion_items) - 1
+                    self.ui.completion_selected_index = last
+                    self._ensure_panel_index_visible(last, len(self.ui.completion_items))
+                    self._safe_invalidate()
+                    return
+                if self.ui.command_panel_mode == "output" and self.ui.command_output_lines:
+                    vis = self._get_visible_rows_for_command_panel()
+                    total = len(self.ui.command_output_lines)
+                    self.ui.command_panel_scroll_offset = max(0, total - vis)
+                    self._safe_invalidate()
+                    return
+            except Exception as e:
+                self._record_ui_error("end", e)
 
     # ------------------------------------------------------------------
     # 事件订阅 — 仅更新 UIState，不污染主聊天区
@@ -554,10 +698,23 @@ class DynamicMinionsShell:
                 display_meta = getattr(c, "display_meta_text", None) or display_meta
                 display = str(display or c.text)
                 display_meta = str(display_meta or "")
+
+                # 计算 execute_text：用 start_position 从原始文本中计算出实际应该执行的完整命令
+                try:
+                    start_pos = int(getattr(c, "start_position", 0))
+                    cut_pos = len(text) + start_pos
+                    if cut_pos < 0:
+                        cut_pos = 0
+                    applied = text[:cut_pos] + str(c.text)
+                except Exception:
+                    applied = str(c.text)
+                execute_text = applied.strip()
+
                 items.append(CompletionItem(
                     text=str(c.text),
                     display=display,
                     display_meta=display_meta,
+                    execute_text=execute_text,
                 ))
             except Exception as e:
                 self._logger.exception("[TUI] skip bad completion: %s", e)
@@ -579,6 +736,90 @@ class DynamicMinionsShell:
             self._home_win.vertical_scroll = 999999
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # 命令面板滚动辅助
+    # ------------------------------------------------------------------
+
+    def _reset_command_panel_scroll(self) -> None:
+        self.ui.command_panel_scroll_offset = 0
+
+    def _get_visible_rows_for_command_panel(self) -> int:
+        mode = self.ui.command_panel_mode
+        rows = self.ui.command_panel_reserved_rows
+
+        if mode == "help":
+            return max(1, rows - 5)
+
+        if mode == "output":
+            return max(1, rows - 3)
+
+        if mode == "completion":
+            return max(1, rows)
+
+        return max(1, rows)
+
+    def _ensure_panel_index_visible(self, selected_index: int, total_count: int) -> None:
+        visible_rows = self._get_visible_rows_for_command_panel()
+        offset = self.ui.command_panel_scroll_offset
+
+        max_offset = max(0, total_count - visible_rows)
+
+        if selected_index < offset:
+            offset = selected_index
+        elif selected_index >= offset + visible_rows:
+            offset = selected_index - visible_rows + 1
+
+        self.ui.command_panel_scroll_offset = max(0, min(offset, max_offset))
+
+    def _scroll_output_lines(self, delta: int) -> None:
+        visible_rows = self._get_visible_rows_for_command_panel()
+        total = len(self.ui.command_output_lines)
+        max_offset = max(0, total - visible_rows)
+        new_offset = self.ui.command_panel_scroll_offset + delta
+        self.ui.command_panel_scroll_offset = max(0, min(new_offset, max_offset))
+
+    # ------------------------------------------------------------------
+    # 输入历史浏览
+    # ------------------------------------------------------------------
+
+    def _get_history_entries(self) -> list[str]:
+        try:
+            return list(self._input_buffer.history.get_strings())
+        except Exception:
+            return []
+
+    def _history_back(self) -> None:
+        entries = self._get_history_entries()
+        if not entries:
+            return
+
+        if not self._history_browsing:
+            self._history_browsing = True
+            self._history_draft = self._input_buffer.text
+            self._history_index = len(entries) - 1
+        else:
+            if self._history_index > 0:
+                self._history_index -= 1
+
+        self._input_buffer.text = entries[self._history_index]
+        self._input_buffer.cursor_position = len(self._input_buffer.text)
+
+    def _history_forward(self) -> None:
+        if not self._history_browsing:
+            return
+
+        entries = self._get_history_entries()
+        if self._history_index < len(entries) - 1:
+            self._history_index += 1
+            self._input_buffer.text = entries[self._history_index]
+        else:
+            # 回到原始草稿 / 空输入
+            self._history_browsing = False
+            self._history_index = -1
+            self._input_buffer.text = self._history_draft
+
+        self._input_buffer.cursor_position = len(self._input_buffer.text)
 
     # ------------------------------------------------------------------
     # 异常 / 错误处理

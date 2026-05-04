@@ -2,7 +2,7 @@
 
 from voice_agent.cli.ui_state import UIState, CompletionItem
 from voice_agent.cli.tui_renderer import (
-    LOGO_LINES,
+    MINION_LOGO,
     format_command_panel,
     format_completion_panel,
     format_footer_bar,
@@ -25,8 +25,8 @@ def test_home_panel_contains_logo():
     state = UIState()
     result = format_home_panel(state)
     text = "".join(t for _, t in result)
-    # LOGO lines should contain box-drawing chars
-    assert "╭" in text or "◕" in text or "∞" in text
+    # MINION_LOGO lines should contain box-drawing chars or goggles
+    assert "[o][o]" in text or ".--''''--." in text or "____" in text
 
 
 def test_home_panel_contains_welcome():
@@ -175,6 +175,56 @@ def test_command_output_panel_renders():
     assert "ASR: sherpa-onnx" in text
 
 
+# ── scroll offset ──────────────────────────────────────────────────────────
+
+def test_completion_panel_respects_scroll_offset():
+    state = UIState()
+    state.command_panel_mode = "completion"
+    state.command_panel_reserved_rows = 4
+    state.command_panel_scroll_offset = 2
+    state.completion_visible = True
+    state.completion_items = [
+        CompletionItem(text=f"/cmd{i}", display=f"/cmd{i}", display_meta=f"cmd {i}")
+        for i in range(10)
+    ]
+    state.completion_selected_index = 3
+    frags = format_command_panel(state)
+    text = "".join(part for _, part in frags)
+    assert "/cmd2" in text, "scroll offset 2 应当可见 cmd2 (index 2)"
+    assert "/cmd5" in text, "scroll offset 2 + rows=4 应当可见 cmd5 (index 5)"
+    assert "/cmd0" not in text, "scroll offset 2 应当隐藏 cmd0"
+    assert "/cmd6" not in text, "scroll offset 2 + rows=4 应当隐藏 cmd6 (index 6 ≥ offset+rows)"
+
+
+def test_help_panel_respects_scroll_offset():
+    state = UIState()
+    state.command_panel_mode = "help"
+    state.command_panel_reserved_rows = 14
+    state.command_panel_scroll_offset = 5
+    state.help_items = [
+        {"command": f"/cmd{i}", "description": f"desc {i}", "aliases": []}
+        for i in range(20)
+    ]
+    state.command_panel_selected_index = 7
+    frags = format_command_panel(state)
+    text = "".join(part for _, part in frags)
+    assert "/cmd5" in text
+    assert "/cmd0" not in text
+
+
+def test_output_panel_respects_scroll_offset():
+    state = UIState()
+    state.command_panel_mode = "output"
+    state.command_panel_reserved_rows = 10
+    state.command_panel_scroll_offset = 3
+    state.command_output_title = "Test"
+    state.command_output_lines = [f"line {i}" for i in range(20)]
+    frags = format_command_panel(state)
+    text = "".join(part for _, part in frags)
+    assert "line 3" in text
+    assert "line 0" not in text
+
+
 # ── footer bar ────────────────────────────────────────────────────────────
 
 def test_footer_bar_returns_fragments():
@@ -187,6 +237,7 @@ def test_footer_bar_returns_fragments():
 def test_footer_bar_shows_app_name():
     state = UIState()
     state.app_name = "Minions"
+    state.command_panel_mode = "completion"
     result = format_footer_bar(state)
     text = "".join(t for _, t in result)
     assert "Minions" in text
@@ -203,6 +254,9 @@ def test_footer_bar_shows_paused():
 # ── LOGO ──────────────────────────────────────────────────────────────────
 
 def test_logo_lines_defined():
-    assert LOGO_LINES
-    assert len(LOGO_LINES) >= 5
-    assert all(isinstance(l, tuple) and len(l) == 2 for l in LOGO_LINES)
+    assert MINION_LOGO
+    assert len(MINION_LOGO) >= 5
+    for row in MINION_LOGO:
+        assert isinstance(row, list)
+        for frag in row:
+            assert isinstance(frag, tuple) and len(frag) == 2

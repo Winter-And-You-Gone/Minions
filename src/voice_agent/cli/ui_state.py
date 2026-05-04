@@ -23,6 +23,7 @@ class CompletionItem:
     text: str = ""
     display: str = ""
     display_meta: str = ""
+    execute_text: str = ""
 
 
 @dataclass
@@ -116,6 +117,9 @@ class UIState:
     command_output_title: str = ""
     command_output_lines: list[str] = field(default_factory=list)
 
+    # 命令面板滚动
+    command_panel_scroll_offset: int = 0
+
     # 底部状态栏
     footer_left: str = ""
     footer_right: str = ""
@@ -123,6 +127,7 @@ class UIState:
     # 主页面板
     version_text: str = ""
     tips_lines: list[str] = field(default_factory=list)
+    current_path: str = ""
 
     def add_notification(self, text: str) -> None:
         if not text:
@@ -149,6 +154,7 @@ class UIState:
             self.command_output_lines = [str(x) for x in text]
         self.completion_visible = False
         self.completion_items = []
+        self.command_panel_scroll_offset = 0
 
     def clear_command_panel(self) -> None:
         self.command_panel_mode = "blank"
@@ -158,6 +164,7 @@ class UIState:
         self.completion_items = []
         self.completion_selected_index = 0
         self.command_panel_selected_index = 0
+        self.command_panel_scroll_offset = 0
 
     @property
     def hidden_message_count(self) -> int:
