@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from wcwidth import wcwidth, wcswidth
+
 from voice_agent.cli.ui_state import UIState, MessageRole
 
 # ── LOGO：小黄人风格 ───────────────────────────────────────────────────────
-# 每行是一个 list[tuple[style, text]] 支持多色片段
 
 MINION_LOGO: list[str] = [
     "     .-=======-.",
@@ -27,14 +28,84 @@ _DEFAULT_TIPS = (
 )
 
 
-_LEFT_WIDTH = 72
+# ── 终端显示宽度工具 ───────────────────────────────────────────────────────
+
+_LEFT_WIDTH = 64
+_GAP = "  │  "
 
 
-def _pad_or_trim(text: str, width: int) -> str:
-    """左对齐/截断文本到指定宽度。"""
-    if len(text) > width:
-        return text[:max(0, width - 1)] + "…"
-    return text.ljust(width)
+def _display_width(text: str) -> int:
+    width = wcswidth(text)
+    if width < 0:
+        width = sum(max(0, wcwidth(ch)) for ch in text)
+    return width
+
+
+def _trim_to_width(text: str, width: int, ellipsis: str = "…") -> str:
+    if width <= 0:
+        return ""
+    if _display_width(text) <= width:
+        return text
+    ellipsis_width = max(1, _display_width(ellipsis))
+    target = max(0, width - ellipsis_width)
+    result: list[str] = []
+    current = 0
+    for ch in text:
+        ch_width = wcwidth(ch)
+        if ch_width < 0:
+            ch_width = 0
+        if current + ch_width > target:
+            break
+        result.append(ch)
+        current += ch_width
+    return "".join(result) + ellipsis
+
+
+def _pad_to_width(text: str, width: int) -> str:
+    text = _trim_to_width(text, width)
+    pad = max(0, width - _display_width(text))
+    return text + (" " * pad)
+
+
+def _wrap_display_lines(text: str, width: int, max_lines: int = 2) -> list[str]:
+    """将文本按显示宽度换行，返回最多 max_lines 行。"""
+    lines: list[str] = []
+    rest = text
+
+    while rest and len(lines) < max_lines:
+        if _display_width(rest) <= width:
+            lines.append(_pad_to_width(rest, width))
+            rest = ""
+            break
+
+        result: list[str] = []
+        current = 0
+        for idx, ch in enumerate(rest):
+            ch_width = wcwidth(ch)
+            if ch_width < 0:
+                ch_width = 0
+            if current + ch_width > width:
+                break
+            result.append(ch)
+            current += ch_width
+            cut_index = idx + 1
+
+        lines.append(_pad_to_width("".join(result), width))
+        rest = rest[cut_index:]
+
+    if rest and lines:
+        # 最后一行加省略号
+        lines[-1] = _pad_to_width(
+            _trim_to_width(lines[-1].rstrip() + "…", width), width,
+        )
+
+    if not lines:
+        lines.append(" " * width)
+
+    return lines
+
+
+MAX_HOME_ROWS = 18
 
 
 def format_home_panel(state: UIState) -> list[tuple[str, str]]:
@@ -56,27 +127,27 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
         if visible_chat:
             if state.hidden_message_count > 0:
                 left_lines.append(
-                    _pad_or_trim(f"… 已折叠 {state.hidden_message_count} 条更早消息", LEFT)
+                    _pad_to_width(f"… 已折叠 {state.hidden_message_count} 条更早消息", LEFT)
                 )
             for msg in visible_chat[-8:]:
                 try:
                     if msg.role == MessageRole.USER:
-                        text = f"你：{msg.text}"
+                        prefix = "你："
                     elif msg.role == MessageRole.ASSISTANT:
                         prefix = f"{state.assistant_name}：" if state.assistant_name else "AI："
-                        text = f"{prefix}{msg.text}"
                     else:
                         continue
-                    left_lines.append(_pad_or_trim(text, LEFT))
+                    wrapped = _wrap_display_lines(prefix + msg.text, LEFT, max_lines=2)
+                    left_lines.extend(wrapped)
                 except Exception:
-                    left_lines.append(_pad_or_trim("• <message error>", LEFT))
+                    left_lines.append(_pad_to_width("• <message error>", LEFT))
         else:
             left_lines.append("暂无对话。直接说话，或输入文字。")
             left_lines.append("输入 /help 查看命令。")
             # Tips
             tips = state.tips_lines if state.tips_lines else _DEFAULT_TIPS
             for tip in tips:
-                left_lines.append(_pad_or_trim(f"· {tip}", LEFT))
+                left_lines.append(_pad_to_width(f"· {tip}", LEFT))
             # Health
             if state.health_items:
                 left_lines.append("")
@@ -86,13 +157,13 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
                         name = getattr(item, "name", "?")
                         level = getattr(item, "level", "info")
                         mark = "✓" if ok else ("✗" if level == "error" else "!")
-                        left_lines.append(_pad_or_trim(f"  {mark} {name}", LEFT))
+                        left_lines.append(_pad_to_width(f"  {mark} {name}", LEFT))
                     except Exception:
-                        left_lines.append(_pad_or_trim("  ? unknown", LEFT))
+                        left_lines.append(_pad_to_width("  ? unknown", LEFT))
 
         if state.error_line:
             left_lines.append("")
-            left_lines.append(_pad_or_trim(f"✗ {state.error_line}", LEFT))
+            left_lines.append(_pad_to_width(f"✗ {state.error_line}", LEFT))
 
         # ── 右侧：LOGO + Runtime ──
         right_rows: list[list[tuple[str, str]]] = []
@@ -131,25 +202,26 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
             except Exception:
                 pass
 
-        # ── 合并左右 ──
-        max_left = len(left_lines)
-        max_right = len(right_rows)
-        max_lines = max(max_left, max_right)
+        # ── 合并左右（限制总行数） ──
+        max_lines = min(MAX_HOME_ROWS, max(len(left_lines), len(right_rows)))
 
         for i in range(max_lines):
             # 左侧
-            if i < max_left:
-                frags.append(("", _pad_or_trim(left_lines[i], LEFT)))
+            if i < len(left_lines):
+                frags.append(("", _pad_to_width(left_lines[i], LEFT)))
             else:
                 frags.append(("", " " * LEFT))
 
+            # 间隔
+            frags.append(("ansibrightblack", _GAP))
+
             # 右侧
-            if i < max_right:
+            if i < len(right_rows):
                 row = right_rows[i]
                 for style, text in row:
                     frags.append((style, text))
             else:
-                frags.append(("", " " * 20))
+                frags.append(("", ""))
 
             frags.append(("", "\n"))
 

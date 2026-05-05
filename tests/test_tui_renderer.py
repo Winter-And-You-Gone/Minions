@@ -315,3 +315,41 @@ def test_logo_lines_defined():
     assert len(MINION_LOGO) >= 5
     for line in MINION_LOGO:
         assert isinstance(line, str)
+
+
+# ── wcwidth 显示宽度 ────────────────────────────────────────────────────────
+
+def test_display_width_handles_chinese():
+    from voice_agent.cli.tui_renderer import _display_width, _pad_to_width, _trim_to_width
+
+    text = "你好世界"
+    assert _display_width(text) >= 8
+
+    trimmed = _trim_to_width("你好世界abcdef", 8)
+    assert _display_width(trimmed) <= 8
+
+    padded = _pad_to_width("你好", 10)
+    assert _display_width(padded) == 10
+
+
+def test_home_panel_chat_does_not_exceed_left_width():
+    from voice_agent.cli.tui_renderer import _LEFT_WIDTH, _display_width
+    state = UIState()
+    state.assistant_name = "西瓜"
+    state.add_user_message("你好")
+    state.add_assistant_message("这是一个很长很长的中文回复" * 20)
+
+    frags = format_home_panel(state)
+    text = "".join(part for _, part in frags)
+
+    assert ".-=======-." in text
+    assert "ASR:" in text
+
+
+def test_minion_logo_exact_shape():
+    from voice_agent.cli.tui_renderer import MINION_LOGO
+
+    assert MINION_LOGO[0].strip() == ".-=======-."
+    assert "/   .---.   \\" in MINION_LOGO[1]
+    assert "|---/ .-. \\---|" in MINION_LOGO[2]
+    assert "\\___|___|___/" in MINION_LOGO[-1]

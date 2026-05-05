@@ -15,6 +15,7 @@ dependencies = [
     "websockets",
     "rich",
     "prompt_toolkit",
+    "wcwidth",
 ]
 
 [tool.setuptools]

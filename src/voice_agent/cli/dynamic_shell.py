@@ -148,7 +148,7 @@ class DynamicMinionsShell:
         # 主面板：LOGO + 欢迎 + 聊天消息 + 提示
         self._home_win = Window(
             FormattedTextControl(lambda: format_home_panel(self.ui)),
-            wrap_lines=True,
+            wrap_lines=False,
             always_hide_cursor=True,
         )
 
