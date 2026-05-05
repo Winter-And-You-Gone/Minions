@@ -136,6 +136,7 @@ class AgentCore:
                     "should_end_wake_session": judge.should_end_wake_session,
                     "confidence": judge.confidence,
                     "reason": judge.reason,
+                    "elapsed_ms": judge.elapsed_ms,
                 })
 
                 if judge.should_end_wake_session:

@@ -40,6 +40,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         subcommands=("list", "select", "info", "monitor", "autodetect"),
     ),
     CommandSpec("/mode", "查看当前对话状态", "/mode"),
+    CommandSpec(
+        "/wakeup",
+        "叫醒 Minions，启动语音监听和 ASR",
+        "/wakeup",
+        aliases=("/wake", "/起床", "/叫醒"),
+    ),
+    CommandSpec(
+        "/sleep",
+        "让 Minions 进入待机，停止语音监听",
+        "/sleep",
+        aliases=("/standby", "/睡觉", "/休息"),
+    ),
+    CommandSpec(
+        "/judge",
+        "查看或切换判断器：rule/local/llm",
+        "/judge rule",
+        subcommands=("rule", "local", "llm"),
+    ),
 )
 
 

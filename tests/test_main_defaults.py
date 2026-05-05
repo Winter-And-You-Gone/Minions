@@ -9,9 +9,9 @@ def test_default_config_uses_sherpa():
     assert config["asr"]["sherpa_onnx"]["enabled"] is True
 
 
-def test_default_config_uses_local_judge():
+def test_default_config_uses_rule_judge():
     config = reload_config("config.yaml")
-    assert config["judge"]["provider"] == "local"
+    assert config["judge"]["provider"] == "rule"
     assert config["judge"]["local"]["model"] == "qwen3.5:4b"
 
 

@@ -56,18 +56,18 @@ llm:
   model: ${LLM_MODEL}
   timeout_seconds: 30
 judge:
-  provider: local
+  provider: rule
   local:
-    enabled: true
+    enabled: false
     api_base: http://127.0.0.1:11434/v1
     api_key: ollama
     model: qwen3.5:4b
-    timeout_seconds: 6
+    timeout_seconds: 3
     temperature: 0
-    max_tokens: 256
+    max_tokens: 128
   thresholds:
-    local_judge_min: 10
-    local_judge_max: 74
+    local_judge_min: 25
+    local_judge_max: 55
 assistant:
   name: 西瓜
   user_title: 少爷
@@ -91,3 +91,8 @@ privacy:
   save_audio: false
   save_transcript: false
   local_stt_only: true
+
+runtime:
+  autostart: false
+  start_on_wakeup: true
+  stop_on_sleep: true

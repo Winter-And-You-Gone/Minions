@@ -76,6 +76,7 @@ class UIState:
     judge_provider: str = "local"
     judge_model: str = "qwen3.5:4b"
     llm_model: str = ""
+    runtime_state: str = "sleeping"
 
     # 唤醒状态
     wake_active: bool = False

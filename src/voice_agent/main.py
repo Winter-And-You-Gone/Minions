@@ -16,6 +16,7 @@ from voice_agent.core.wake_name import WakeNameMatcher
 from voice_agent.core.persona_test_cases import PERSONA_TEST_CASES
 from voice_agent.core.local_judge_client import LocalJudgeClient
 from voice_agent.core.health_check import check_runtime_health
+from voice_agent.core.runtime_controller import RuntimeController
 from voice_agent.asr.mock_asr import MockASR
 from voice_agent.asr.sherpa_onnx_asr import SherpaOnnxASR
 from voice_agent.output.console_output import handle_console_output
@@ -286,20 +287,22 @@ async def run_cli(
         device=ac.get("device"),
     )
 
-    # ASR 引擎（可选 — 模型文件不存在时不崩溃）
-    asr_engine = None
+    # RuntimeController — 管理 ASR 生命周期，默认不启动
     asr_engine_name = asr_override or config.get("asr", {}).get("engine", "mock")
-    if asr_engine_name != "mock":
-        try:
-            asr_engine = build_asr(asr_engine_name, bus, config)
-            logger.info("[系统] ASR 引擎: %s", asr_engine_name)
-        except Exception as e:
-            logger.warning("[系统] ASR 引擎初始化失败: %s，将使用键盘输入", e)
-            asr_engine = None
+    runtime_controller = RuntimeController(
+        bus=bus,
+        config=config,
+        asr_engine_name=asr_engine_name,
+        asr_factory=build_asr,
+    )
+    logger.info("[系统] ASR 引擎: %s（默认待机，输入 /wakeup 启动）", asr_engine_name)
 
-    # 桥接 asr.final → AgentCore
+    # 桥接 asr.final → AgentCore（仅当运行时处于监听状态）
     async def on_asr_final(event: dict) -> None:
         if event.get("type") == "asr.final":
+            if not runtime_controller.is_listening:
+                logger.debug("[CLI] 跳过 asr.final — 运行时未处于监听状态")
+                return
             logger.info(
                 "[CLI] 收到 asr.final: text=%s source=%s",
                 event.get("text", ""),
@@ -328,7 +331,8 @@ async def run_cli(
     # 交互式外壳
     shell = DynamicMinionsShell(
         bus, agent, state, llm,
-        mic=mic, asr_engine=asr_engine,
+        mic=mic, asr_engine=None,
+        runtime_controller=runtime_controller,
         health_report=health_report,
         runtime_info=runtime_info,
         config=config,
@@ -342,8 +346,7 @@ async def run_cli(
     try:
         await shell.run()
     finally:
-        if asr_engine is not None:
-            await asr_engine.stop()
+        await runtime_controller.close()
         await llm.close()
         if local_judge is not None:
             await local_judge.close()
@@ -369,13 +372,7 @@ async def run_tui(
         "completion_enabled": completion_enabled,
     }
 
-    # 如果 ASR 模型缺失，asr_override 设为 mock 避免崩溃
-    if health_report.has_error:
-        for item in health_report.items:
-            if (not item.ok) and item.level == "error" and "ASR" in item.name:
-                asr_override = "mock"
-                break
-
+    # 如果 ASR 模型缺失，运行时仍然可以启动 TUI，/wakeup 时再处理
     await run_cli(
         config_path,
         asr_override=asr_override,

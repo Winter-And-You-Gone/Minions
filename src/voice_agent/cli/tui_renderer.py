@@ -189,6 +189,7 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
         right_rows.append([("magenta", "Judge: "), ("white", f"{state.judge_model} ({state.judge_provider})")])
         right_rows.append([("green", "LLM:   "), ("white", llm_label)])
         right_rows.append([("yellow", "Mode:  "), ("white", state.conversation_mode)])
+        right_rows.append([("ansibrightblack", "Run:   "), ("white", state.runtime_state)])
         right_rows.append([("blue", "Wake:  "), ("white", wake_text)])
 
         if state.current_path:
@@ -404,7 +405,7 @@ def format_output_panel(state: UIState) -> list[tuple[str, str]]:
 # ── 底部状态栏 ────────────────────────────────────────────────────────────
 
 def format_footer_bar(state: UIState) -> list[tuple[str, str]]:
-    """底部状态栏：左侧根据面板模式显示不同提示，右侧模型信息。"""
+    """底部状态栏：左侧根据面板模式和运行时状态显示不同提示，右侧模型信息。"""
     try:
         mode = state.command_panel_mode
         if mode == "completion":
@@ -414,14 +415,27 @@ def format_footer_bar(state: UIState) -> list[tuple[str, str]]:
         elif mode == "output":
             left_hint = "↑↓ scroll  ·  PgUp/PgDn page  ·  Esc close"
         else:
-            left_hint = f"{state.conversation_mode}"
+            # 根据运行时状态显示不同提示
+            rs = state.runtime_state
+            if rs == "sleeping":
+                left_hint = f"sleeping · /wakeup to start"
+            elif rs == "waking":
+                left_hint = "waking · starting ASR..."
+            elif rs == "listening":
+                left_hint = f"listening · {state.conversation_mode}"
+            elif rs == "stopping":
+                left_hint = "stopping ASR..."
+            elif rs == "error":
+                left_hint = "error — try /wakeup"
+            else:
+                left_hint = f"{state.conversation_mode}"
 
         if state.paused:
             left_hint = "⏸  PAUSED"
         elif mode != "blank":
             left_hint = f"{state.app_name} | {left_hint}"
 
-        right = state.footer_right or f"Judge:{state.judge_model}"
+        right = state.footer_right or f"Runtime:{state.runtime_state}"
         padding = max(0, 80 - len(left_hint) - len(right))
         line = left_hint + " " * padding + right
 

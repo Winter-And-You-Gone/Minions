@@ -12,12 +12,12 @@ conda run -n Minions python -m voice_agent.main
 
 默认启动：
 - TUI 全屏界面
-- sherpa-onnx ASR（语音识别）
+- **语音监听默认停止**，输入 `/wakeup` 启动 ASR
 - Local Judge qwen3.5:4b（语义判断）
 - 主 LLM（琉璃川人格）
 - WebSocket 输出
 
-无需记忆任何参数。
+> **注意**: 启动后底部状态栏显示 `sleeping · /wakeup to start`。输入 `/wakeup` 开始语音识别，输入 `/sleep` 进入待机。
 
 ## 依赖安装
 
@@ -71,6 +71,9 @@ python -m voice_agent.main --headless
 | `/help` | 显示帮助 |
 | `/status` | 系统状态 |
 | `/debug` | 显示 Gate/Judge/ASR 内部状态 |
+| `/wakeup` | 启动语音监听和 ASR |
+| `/sleep` | 停止语音监听，进入待机 |
+| `/judge` | 查看或切换判断器 (rule/local/llm) |
 | `/mic monitor` | 实时麦克风 VU 音量监测 |
 | `/mic list` | 列出音频设备 |
 | `/mic select <id>` | 选择麦克风 |
@@ -102,6 +105,7 @@ src/voice_agent/
 │   ├── intervention_gate.py# 介入判断器
 │   ├── local_judge_client.py # 本地语义 Judge
 │   ├── health_check.py     # 运行时健康检查
+│   ├── runtime_controller.py # ASR 生命周期管理
 │   ├── conversation_state.py
 │   └── llm_client.py       # LLM 客户端
 ├── output/                 # 输出

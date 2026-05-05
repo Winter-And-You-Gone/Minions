@@ -67,6 +67,7 @@ class DynamicMinionsShell:
         llm: LLMClient,
         mic: Microphone | None = None,
         asr_engine: object | None = None,
+        runtime_controller: object | None = None,
         health_report: object | None = None,
         runtime_info: dict | None = None,
         config: dict | None = None,
@@ -79,6 +80,7 @@ class DynamicMinionsShell:
         self._mic = mic
         self._asr_engine = asr_engine
         self._health_report = health_report
+        self._runtime_controller = runtime_controller
         self._config = config
         self._config_path = config_path
         self._logger = get_logger()
@@ -93,6 +95,9 @@ class DynamicMinionsShell:
                 available=llm.is_available,
             ),
         )
+
+        # 默认运行时状态为 sleeping（ASR 不会自动启动）
+        self.ui.runtime_state = "sleeping"
 
         # runtime_info 注入
         if runtime_info:
@@ -135,10 +140,8 @@ class DynamicMinionsShell:
         self.ui.add_system_message("Minions — 常驻语音 Agent")
         self.ui.add_system_message("输入 /help 查看命令，直接输入文字与 AI 对话")
 
-        # ASR 不可用提示
-        if asr_engine is None:
-            self.ui.add_notification("ASR 模型文件不存在，语音识别未启动，但可以键盘输入")
-            self.ui.add_system_message("ASR 模型文件不存在，语音识别未启动，但可以键盘输入")
+        # 默认 ASR 未启动提示（用户需要输入 /wakeup 启动语音监听）
+        self.ui.add_notification("语音监听已停止。输入 /wakeup 启动语音输入")
 
     # ------------------------------------------------------------------
     # UI 构建
@@ -587,6 +590,12 @@ class DynamicMinionsShell:
             if msg:
                 self.ui.add_notification(msg)
 
+        elif etype == "runtime.status":
+            self.ui.runtime_state = event.get("state", "sleeping")
+            msg = event.get("message", "")
+            if msg:
+                self.ui.add_notification(msg)
+
         # 每次事件后刷新唤醒会话状态
         self._refresh_wake_state()
         self._safe_invalidate()
@@ -929,10 +938,6 @@ class DynamicMinionsShell:
     # ------------------------------------------------------------------
 
     async def run(self) -> None:
-        asr_task: asyncio.Task | None = None
-        if self._asr_engine is not None:
-            asr_task = asyncio.create_task(self._asr_engine.start())
-
         try:
             try:
                 await self._app.run_async()
@@ -940,11 +945,10 @@ class DynamicMinionsShell:
                 self._force_exit()
         finally:
             self._exit_requested = True
-            if asr_task is not None:
-                asr_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await asr_task
-            if self._asr_engine is not None:
+            # 通过 RuntimeController 关闭 ASR（如果有）
+            if self._runtime_controller is not None:
+                await self._runtime_controller.close()
+            elif self._asr_engine is not None:
                 with contextlib.suppress(Exception):
                     await self._asr_engine.stop()
             if self._mic_monitor_task:
@@ -1020,6 +1024,15 @@ class DynamicMinionsShell:
         "/mic": ("麦克风管理", "mic"),
         "/name": ("设置或查看 AI 名字", "name"),
         "/名字": ("设置或查看 AI 名字", "name"),
+        "/wakeup": ("启动语音监听和 ASR", "wakeup"),
+        "/wake": ("启动语音监听和 ASR", "wakeup"),
+        "/起床": ("启动语音监听和 ASR", "wakeup"),
+        "/叫醒": ("启动语音监听和 ASR", "wakeup"),
+        "/sleep": ("停止语音监听，进入待机", "sleep"),
+        "/standby": ("停止语音监听，进入待机", "sleep"),
+        "/睡觉": ("停止语音监听，进入待机", "sleep"),
+        "/休息": ("停止语音监听，进入待机", "sleep"),
+        "/judge": ("查看或切换判断器", "judge"),
     }
 
     async def _dispatch_command(self, raw: str) -> None:
@@ -1396,6 +1409,80 @@ class DynamicMinionsShell:
             self.ui.set_command_output("Microphone Auto-Detect", out_lines)
         except Exception as e:
             self._record_ui_error("mic_autodetect", e)
+        self._safe_invalidate()
+
+    # ------------------------------------------------------------------
+    # /wakeup /sleep /judge 命令
+    # ------------------------------------------------------------------
+
+    async def _cmd_wakeup(self) -> None:
+        """启动语音监听和 ASR。"""
+        if self._runtime_controller is None:
+            self.ui.set_command_output("Wakeup", "未配置 RuntimeController，无法启动语音监听")
+            self._safe_invalidate()
+            return
+
+        ok = await self._runtime_controller.wakeup()
+        if ok:
+            self.ui.runtime_state = "listening"
+            self.ui.add_notification("语音监听已启动")
+        else:
+            self.ui.runtime_state = "error"
+            self.ui.add_notification("语音监听启动失败")
+        self._safe_invalidate()
+
+    async def _cmd_sleep(self) -> None:
+        """停止语音监听，进入待机。"""
+        if self._runtime_controller is None:
+            self.ui.set_command_output("Sleep", "未配置 RuntimeController")
+            self._safe_invalidate()
+            return
+
+        await self._runtime_controller.sleep()
+        self.ui.runtime_state = "sleeping"
+        self.ui.add_notification("已进入待机")
+        self._safe_invalidate()
+
+    async def _cmd_judge(self, *args: str) -> None:
+        """查看或切换 Judge provider。"""
+        gate = getattr(self._agent, "_gate", None)
+        if gate is None:
+            self.ui.set_command_output("Judge", "Gate 未初始化")
+            self._safe_invalidate()
+            return
+
+        if not args:
+            current = getattr(gate, "judge_provider", "rule")
+            self.ui.set_command_output(
+                "Judge",
+                [
+                    f"当前判断器: {current}",
+                    "",
+                    "用法:",
+                    "  /judge            查看当前判断器",
+                    "  /judge rule       规则判断（最快）",
+                    "  /judge local      本地小模型判断（qwen3.5:4b）",
+                    "  /judge llm        主 LLM 判断（最慢）",
+                ],
+            )
+            self._safe_invalidate()
+            return
+
+        provider = args[0]
+        valid = ("rule", "local", "llm")
+        if provider not in valid:
+            self.ui.set_command_output(
+                "Judge",
+                f"无效判断器: {provider}\n可用: {', '.join(valid)}",
+            )
+            self._safe_invalidate()
+            return
+
+        # 更新 Gate 的 judge_provider
+        gate.judge_provider = provider
+        self.ui.judge_provider = provider
+        self.ui.add_notification(f"判断器已切换为: {provider}")
+        self.ui.set_command_output("Judge", f"判断器已切换为: {provider}")
         self._safe_invalidate()
 
     # ------------------------------------------------------------------

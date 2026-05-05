@@ -46,3 +46,28 @@ def test_alias_resolves_subcommands():
     comps = collect("/名字 ")
     assert any(c.text == "set" for c in comps)
     assert any(c.text == "alias" for c in comps)
+
+
+# ── 新命令：wakeup / sleep / judge ─────────────────────────────────────────
+
+def test_wakeup_completion():
+    comps = collect("/wake")
+    assert any(c.text == "/wakeup" for c in comps)
+    assert any(c.text == "/wake" for c in comps)
+
+
+def test_sleep_completion():
+    comps = collect("/sl")
+    assert any(c.text == "/sleep" for c in comps)
+
+
+def test_standby_completion():
+    comps = collect("/st")
+    assert any(c.text == "/standby" for c in comps)
+
+
+def test_judge_subcommand_completion():
+    comps = collect("/judge ")
+    assert any(c.text == "rule" for c in comps)
+    assert any(c.text == "local" for c in comps)
+    assert any(c.text == "llm" for c in comps)

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,6 +78,7 @@ class LocalJudgeResult:
     confidence: float
     reason: str
     raw: str = ""
+    elapsed_ms: int = 0
 
 
 class LocalJudgeClient:
@@ -131,6 +133,8 @@ class LocalJudgeClient:
         user_title: str = "少爷",
     ) -> LocalJudgeResult:
         """调用本地模型判断用户语音目标对象。"""
+        started = time.perf_counter()
+
         if not self.is_available:
             return LocalJudgeResult(
                 target="unclear",
@@ -138,6 +142,7 @@ class LocalJudgeClient:
                 should_end_wake_session=False,
                 confidence=0.0,
                 reason="local judge 不可用",
+                elapsed_ms=0,
             )
 
         prompt = LOCAL_JUDGE_PROMPT.format(
@@ -164,6 +169,7 @@ class LocalJudgeClient:
         ]
 
         raw = await self._chat(messages)
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
 
         try:
             data = json.loads(self._extract_json(raw))
@@ -174,6 +180,7 @@ class LocalJudgeClient:
                 confidence=float(data.get("confidence", 0.0)),
                 reason=str(data.get("reason", "")),
                 raw=raw,
+                elapsed_ms=elapsed_ms,
             )
         except Exception as e:
             self._logger.warning("[LocalJudge] JSON 解析失败: %s raw=%s", e, raw[:200])
@@ -184,6 +191,7 @@ class LocalJudgeClient:
                 confidence=0.0,
                 reason=f"JSON 解析失败: {e}",
                 raw=raw,
+                elapsed_ms=elapsed_ms,
             )
 
     async def _chat(self, messages: list[dict[str, str]]) -> str:
