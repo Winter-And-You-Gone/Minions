@@ -25,8 +25,8 @@ def test_home_panel_contains_logo():
     state = UIState()
     result = format_home_panel(state)
     text = "".join(t for _, t in result)
-    # MINION_LOGO lines should contain box-drawing chars or goggles
-    assert "[o][o]" in text or ".--''''--." in text or "____" in text
+    # MINION_LOGO should contain the new minion ASCII
+    assert ".-=======-." in text or "| | @ | |" in text
 
 
 def test_home_panel_contains_welcome():
@@ -71,6 +71,30 @@ def test_home_panel_shows_runtime_info():
     text = "".join(t for _, t in result)
     assert "sherpa-onnx" in text
     assert "qwen3.5" in text
+
+
+def test_home_panel_contains_chat_and_runtime():
+    """验证左 Chat + 右 Runtime 同时显示。"""
+    state = UIState()
+    state.asr_engine = "sherpa-onnx"
+    state.judge_model = "qwen3.5:4b"
+    state.add_user_message("你好")
+    state.add_assistant_message("我在呢")
+    frags = format_home_panel(state)
+    text = "".join(part for _, part in frags)
+    assert "Chat" in text
+    assert "你好" in text
+    assert "qwen3.5:4b" in text
+    assert ".-=======-." in text
+
+
+def test_home_panel_contains_minion_logo():
+    """验证新 LOGO 出现。"""
+    state = UIState()
+    frags = format_home_panel(state)
+    text = "".join(part for _, part in frags)
+    assert ".-=======-." in text
+    assert "| | @ | |" in text
 
 
 # ── input prompt ──────────────────────────────────────────────────────────
@@ -212,6 +236,39 @@ def test_help_panel_respects_scroll_offset():
     assert "/cmd0" not in text
 
 
+def test_help_panel_respects_scroll_offset_by_items():
+    """验证 help 按 item 数（非行数）滚动。"""
+    state = UIState()
+    state.command_panel_mode = "help"
+    state.command_panel_reserved_rows = 14
+    state.command_panel_scroll_offset = 3
+    state.command_panel_selected_index = 4
+    state.help_items = [
+        {"command": f"/cmd{i}", "description": f"desc{i}", "usage": f"/cmd{i}", "aliases": []}
+        for i in range(12)
+    ]
+    frags = format_command_panel(state)
+    text = "".join(part for _, part in frags)
+    assert "/cmd3" in text
+    assert "/cmd4" in text
+    assert "/cmd0" not in text
+
+
+def test_help_panel_does_not_exceed_reserved_rows():
+    """验证 help panel 输出的总行数不超过 reserved_rows。"""
+    state = UIState()
+    state.command_panel_mode = "help"
+    state.command_panel_reserved_rows = 14
+    state.help_items = [
+        {"command": f"/cmd{i}", "description": f"desc{i}", "usage": f"/cmd{i}", "aliases": []}
+        for i in range(20)
+    ]
+    frags = format_command_panel(state)
+    text = "".join(part for _, part in frags)
+    line_count = text.count("\n")
+    assert line_count <= 14
+
+
 def test_output_panel_respects_scroll_offset():
     state = UIState()
     state.command_panel_mode = "output"
@@ -256,7 +313,5 @@ def test_footer_bar_shows_paused():
 def test_logo_lines_defined():
     assert MINION_LOGO
     assert len(MINION_LOGO) >= 5
-    for row in MINION_LOGO:
-        assert isinstance(row, list)
-        for frag in row:
-            assert isinstance(frag, tuple) and len(frag) == 2
+    for line in MINION_LOGO:
+        assert isinstance(line, str)

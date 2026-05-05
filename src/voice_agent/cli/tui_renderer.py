@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
-from itertools import zip_longest
-
 from voice_agent.cli.ui_state import UIState, MessageRole
 
 # ── LOGO：小黄人风格 ───────────────────────────────────────────────────────
 # 每行是一个 list[tuple[style, text]] 支持多色片段
 
-MINION_LOGO: list[list[tuple[str, str]]] = [
-    [("yellow",      "   .--''''--.   ")],
-    [("yellow",      "  /   _  _   \\  ")],
-    [("yellow",      " |  "), ("cyan", "[o][o]"), ("yellow",  "  | ")],
-    [("yellow",      " |    ....    | ")],
-    [("yellow",      " |   \\____/   | ")],
-    [("blue",        " |   |====|   | ")],
-    [("blue",        " |___|    |___| ")],
+MINION_LOGO: list[str] = [
+    "     .-=======-.",
+    "    /   .---.   \\",
+    "   |---/ .-. \\---|",
+    "   |  | | @ | |  |",
+    "   |  | |   | |  |",
+    "   |---\\ '-' /---|",
+    "   | \\    _    / |",
+    "   |  \\ .===. /  |",
+    "    \\___|___|___/",
 ]
 
 _DEFAULT_TIPS = (
@@ -27,14 +27,76 @@ _DEFAULT_TIPS = (
 )
 
 
-# ── Home 面板 ─────────────────────────────────────────────────────────────
+_LEFT_WIDTH = 72
+
+
+def _pad_or_trim(text: str, width: int) -> str:
+    """左对齐/截断文本到指定宽度。"""
+    if len(text) > width:
+        return text[:max(0, width - 1)] + "…"
+    return text.ljust(width)
+
 
 def format_home_panel(state: UIState) -> list[tuple[str, str]]:
-    """主面板：LOGO（左）+ 彩色 Runtime 信息（右），然后聊天消息，最后提示/健康。"""
+    """主面板：左 Chat，右 LOGO + Runtime 信息 + 提示/健康。"""
     try:
         frags: list[tuple[str, str]] = []
+        LEFT = _LEFT_WIDTH
 
-        # ── 两栏布局：LOGO 左侧 + 彩色信息右侧 ──
+        # ── 左侧：Chat ──
+        left_lines: list[str] = []
+        left_lines.append("Chat")
+        left_lines.append("─" * LEFT)
+
+        visible_chat = [
+            m for m in state.visible_messages
+            if m.role in (MessageRole.USER, MessageRole.ASSISTANT)
+        ]
+
+        if visible_chat:
+            if state.hidden_message_count > 0:
+                left_lines.append(
+                    _pad_or_trim(f"… 已折叠 {state.hidden_message_count} 条更早消息", LEFT)
+                )
+            for msg in visible_chat[-8:]:
+                try:
+                    if msg.role == MessageRole.USER:
+                        text = f"你：{msg.text}"
+                    elif msg.role == MessageRole.ASSISTANT:
+                        prefix = f"{state.assistant_name}：" if state.assistant_name else "AI："
+                        text = f"{prefix}{msg.text}"
+                    else:
+                        continue
+                    left_lines.append(_pad_or_trim(text, LEFT))
+                except Exception:
+                    left_lines.append(_pad_or_trim("• <message error>", LEFT))
+        else:
+            left_lines.append("暂无对话。直接说话，或输入文字。")
+            left_lines.append("输入 /help 查看命令。")
+            # Tips
+            tips = state.tips_lines if state.tips_lines else _DEFAULT_TIPS
+            for tip in tips:
+                left_lines.append(_pad_or_trim(f"· {tip}", LEFT))
+            # Health
+            if state.health_items:
+                left_lines.append("")
+                for item in state.health_items:
+                    try:
+                        ok = getattr(item, "ok", False)
+                        name = getattr(item, "name", "?")
+                        level = getattr(item, "level", "info")
+                        mark = "✓" if ok else ("✗" if level == "error" else "!")
+                        left_lines.append(_pad_or_trim(f"  {mark} {name}", LEFT))
+                    except Exception:
+                        left_lines.append(_pad_or_trim("  ? unknown", LEFT))
+
+        if state.error_line:
+            left_lines.append("")
+            left_lines.append(_pad_or_trim(f"✗ {state.error_line}", LEFT))
+
+        # ── 右侧：LOGO + Runtime ──
+        right_rows: list[list[tuple[str, str]]] = []
+
         llm_label = state.llm_model or state.llm.model or "mock"
         wake_text = (
             f"active {int(state.wake_remaining_seconds)}s"
@@ -42,28 +104,25 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
             else "inactive"
         )
 
-        # 左侧：LOGO 每行作为一个多片段字符串
-        left_lines: list[str] = []
-        for row_frags in MINION_LOGO:
-            line = "".join(text for _, text in row_frags)
-            left_lines.append(line)
+        # LOGO
+        for line in MINION_LOGO:
+            right_rows.append([("yellow", line)])
 
-        # 右侧：每行是一个 list[tuple[style, text]]
-        right_rows: list[list[tuple[str, str]]] = [
-            [("bold cyan", f"✦ {state.app_name}  {state.version_text or ''}")],
-            [("bold white", f"Welcome back, {state.assistant_name}!")],
-            [],
-            [("cyan", "ASR:   "), ("white", state.asr_engine)],
-            [("magenta", "Judge: "), ("white", f"{state.judge_model} ({state.judge_provider})")],
-            [("green", "LLM:   "), ("white", llm_label)],
-            [("yellow", "Mode:  "), ("white", state.conversation_mode)],
-            [("blue", "Wake:  "), ("white", wake_text)],
-        ]
+        right_rows.append([])
+
+        # Runtime 信息
+        right_rows.append([("bold cyan", f"✦ {state.app_name}  {state.version_text or ''}")])
+        right_rows.append([("bold white", f"Welcome back, {state.assistant_name}!")])
+        right_rows.append([])
+        right_rows.append([("cyan", "ASR:   "), ("white", state.asr_engine)])
+        right_rows.append([("magenta", "Judge: "), ("white", f"{state.judge_model} ({state.judge_provider})")])
+        right_rows.append([("green", "LLM:   "), ("white", llm_label)])
+        right_rows.append([("yellow", "Mode:  "), ("white", state.conversation_mode)])
+        right_rows.append([("blue", "Wake:  "), ("white", wake_text)])
 
         if state.current_path:
             right_rows.append([("ansibrightblack", "Path:  "), ("white", state.current_path)])
 
-        # 麦克风 VU（仅在监测时显示）
         if state.mic.monitoring:
             try:
                 from voice_agent.cli.formatters import vu_bar
@@ -72,61 +131,27 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
             except Exception:
                 pass
 
-        for left, right_row in zip_longest(left_lines, right_rows, fillvalue=[]):
-            if left:
-                frags.append(("yellow", left.ljust(22)))
+        # ── 合并左右 ──
+        max_left = len(left_lines)
+        max_right = len(right_rows)
+        max_lines = max(max_left, max_right)
+
+        for i in range(max_lines):
+            # 左侧
+            if i < max_left:
+                frags.append(("", _pad_or_trim(left_lines[i], LEFT)))
             else:
-                frags.append(("", " " * 22))
-            for style, text in right_row:
-                frags.append((style, text))
+                frags.append(("", " " * LEFT))
+
+            # 右侧
+            if i < max_right:
+                row = right_rows[i]
+                for style, text in row:
+                    frags.append((style, text))
+            else:
+                frags.append(("", " " * 20))
+
             frags.append(("", "\n"))
-
-        frags.append(("ansibrightblack", f"  {'─' * 52}\n"))
-
-        # ── 聊天消息（仅用户/AI，最多 4 条） ──
-        if state.messages:
-            visible_chat = [m for m in state.visible_messages if m.role in (MessageRole.USER, MessageRole.ASSISTANT)]
-            visible_chat = visible_chat[-4:]
-            if visible_chat:
-                frags.append(("bold underline", "  Chat\n"))
-                if state.hidden_message_count > 0:
-                    frags.append(("ansibrightblack", f"  … 已折叠 {state.hidden_message_count} 条更早消息\n"))
-                for msg in visible_chat:
-                    try:
-                        if msg.role == MessageRole.USER:
-                            frags.append(("bold cyan", f"  你：{msg.text}\n"))
-                        elif msg.role == MessageRole.ASSISTANT:
-                            prefix = f"  {state.assistant_name}：" if state.assistant_name else "  AI："
-                            frags.append(("green", f"{prefix}{msg.text}\n"))
-                    except Exception:
-                        frags.append(("ansiyellow", "  • <message error>\n"))
-
-        # ── 提示（仅在没有消息时显示） ──
-        if not state.messages:
-            frags.append(("", "\n"))
-            frags.append(("bold underline", "  Tips\n"))
-            tips = state.tips_lines if hasattr(state, "tips_lines") and state.tips_lines else _DEFAULT_TIPS
-            for tip in tips:
-                frags.append(("ansibrightblack", f"  · {tip}\n"))
-
-            # 健康检查
-            if state.health_items:
-                frags.append(("", "\n"))
-                frags.append(("bold underline", "  Health\n"))
-                for item in state.health_items:
-                    try:
-                        ok = getattr(item, "ok", False)
-                        name = getattr(item, "name", "?")
-                        level = getattr(item, "level", "info")
-                        mark = "✓" if ok else ("✗" if level == "error" else "!")
-                        style = "green" if ok else ("red" if level == "error" else "yellow")
-                        frags.append((style, f"  {mark} {name}\n"))
-                    except Exception:
-                        frags.append(("ansibrightblack", "  ? unknown\n"))
-
-        # 错误信息
-        if state.error_line:
-            frags.append(("red", f"  ✗ {state.error_line}\n"))
 
         return frags
     except Exception as e:
@@ -227,15 +252,18 @@ def format_help_panel(state: UIState) -> list[tuple[str, str]]:
         # ── 标题 ──
         title = state.command_panel_title or "Browse default commands"
         frags.append(("bold cyan", f"  {title}\n"))
-        frags.append(("", "\n"))
 
-        # ── 命令列表（带滚动窗口） ──
+        # ── 命令列表（每 item 占 2 行） ──
+        header_lines = 3  # tab bar + title + 空行
+        footer_lines = 1  # 底部提示
+        usable_lines = max(1, rows - header_lines - footer_lines)
+        visible_item_count = max(1, usable_lines // 2)
+
         items = state.help_items
         selected = state.command_panel_selected_index
-        max_display = max(0, rows - 5)  # 留出 tab + title + 空行 + 底部提示
         offset = state.command_panel_scroll_offset
 
-        visible_items = items[offset: offset + max_display]
+        visible_items = items[offset: offset + visible_item_count]
 
         for i, item in enumerate(visible_items):
             absolute_index = offset + i
@@ -244,14 +272,13 @@ def format_help_panel(state: UIState) -> list[tuple[str, str]]:
             aliases = item.get("aliases", [])
             prefix = "↓ " if absolute_index == selected else "  "
             cmd_style = "bold cyan" if absolute_index == selected else "bold white"
-            desc_style = "ansibrightblack" if absolute_index == selected else "ansibrightblack"
             alias_text = f"  (别名: {', '.join(aliases)})" if aliases else ""
             frags.append((cmd_style, f"{prefix}{cmd}{alias_text}\n"))
-            frags.append((desc_style, f"     {desc}\n"))
+            frags.append(("ansibrightblack", f"     {desc}\n"))
 
         # 填充剩余行
-        used = len(visible_items) * 2
-        fill = max(0, max_display * 2 - used)
+        used_lines = header_lines + 1 + len(visible_items) * 2 + footer_lines
+        fill = max(0, rows - used_lines)
         for _ in range(fill):
             frags.append(("", " " * 80 + "\n"))
 

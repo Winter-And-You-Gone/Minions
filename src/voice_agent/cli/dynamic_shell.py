@@ -10,9 +10,16 @@ from pathlib import Path
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.keys import Keys
-from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout import (
+    ConditionalContainer,
+    HSplit,
+    Layout,
+    VSplit,
+    Window,
+)
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 
 from voice_agent.cli.shell import (
@@ -160,14 +167,26 @@ class DynamicMinionsShell:
         )
         input_row = VSplit([input_prompt, self._input_window])
 
-        sep_mid = Window(height=1, char="─")
+        # 条件：仅在非 blank 模式显示中间分隔线和命令面板
+        show_command_panel = Condition(
+            lambda: self.ui.command_panel_mode != "blank"
+        )
 
-        # 命令面板（固定 14 行，blank/completion/help 三种模式）
+        command_sep = ConditionalContainer(
+            content=Window(height=1, char="─"),
+            filter=show_command_panel,
+        )
+
+        # 命令面板（固定 14 行，help/completion/output 三种模式）
         self._command_panel_win = Window(
             FormattedTextControl(lambda: format_command_panel(self.ui)),
             height=self.ui.command_panel_reserved_rows,
             wrap_lines=False,
             always_hide_cursor=True,
+        )
+        command_panel = ConditionalContainer(
+            content=self._command_panel_win,
+            filter=show_command_panel,
         )
 
         sep_bot = Window(height=1, char="─")
@@ -182,8 +201,8 @@ class DynamicMinionsShell:
             self._home_win,
             sep_top,
             input_row,
-            sep_mid,
-            self._command_panel_win,
+            command_sep,
+            command_panel,
             sep_bot,
             footer,
         ])
@@ -388,22 +407,27 @@ class DynamicMinionsShell:
         @self._kb.add("pageup", eager=True)
         def _page_up(event: object) -> None:
             try:
-                vis = self._get_visible_rows_for_command_panel()
-                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                mode = self.ui.command_panel_mode
+                if mode in ("help", "completion"):
+                    vis = self._get_visible_items_for_command_panel()
+                else:
+                    vis = self._get_visible_rows_for_command_panel()
+
+                if mode == "help" and self.ui.help_items:
                     self.ui.command_panel_selected_index = max(0, self.ui.command_panel_selected_index - vis)
                     self._ensure_panel_index_visible(
                         self.ui.command_panel_selected_index, len(self.ui.help_items),
                     )
                     self._safe_invalidate()
                     return
-                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
+                if mode == "completion" and self.ui.completion_items:
                     self.ui.completion_selected_index = max(0, self.ui.completion_selected_index - vis)
                     self._ensure_panel_index_visible(
                         self.ui.completion_selected_index, len(self.ui.completion_items),
                     )
                     self._safe_invalidate()
                     return
-                if self.ui.command_panel_mode == "output" and self.ui.command_output_lines:
+                if mode == "output" and self.ui.command_output_lines:
                     self._scroll_output_lines(-vis)
                     self._safe_invalidate()
                     return
@@ -414,8 +438,13 @@ class DynamicMinionsShell:
         @self._kb.add("pagedown", eager=True)
         def _page_down(event: object) -> None:
             try:
-                vis = self._get_visible_rows_for_command_panel()
-                if self.ui.command_panel_mode == "help" and self.ui.help_items:
+                mode = self.ui.command_panel_mode
+                if mode in ("help", "completion"):
+                    vis = self._get_visible_items_for_command_panel()
+                else:
+                    vis = self._get_visible_rows_for_command_panel()
+
+                if mode == "help" and self.ui.help_items:
                     last = len(self.ui.help_items) - 1
                     self.ui.command_panel_selected_index = min(last, self.ui.command_panel_selected_index + vis)
                     self._ensure_panel_index_visible(
@@ -423,7 +452,7 @@ class DynamicMinionsShell:
                     )
                     self._safe_invalidate()
                     return
-                if self.ui.command_panel_mode == "completion" and self.ui.completion_items:
+                if mode == "completion" and self.ui.completion_items:
                     last = len(self.ui.completion_items) - 1
                     self.ui.completion_selected_index = min(last, self.ui.completion_selected_index + vis)
                     self._ensure_panel_index_visible(
@@ -431,7 +460,7 @@ class DynamicMinionsShell:
                     )
                     self._safe_invalidate()
                     return
-                if self.ui.command_panel_mode == "output" and self.ui.command_output_lines:
+                if mode == "output" and self.ui.command_output_lines:
                     self._scroll_output_lines(vis)
                     self._safe_invalidate()
                     return
@@ -748,27 +777,43 @@ class DynamicMinionsShell:
         mode = self.ui.command_panel_mode
         rows = self.ui.command_panel_reserved_rows
 
-        if mode == "help":
-            return max(1, rows - 5)
-
         if mode == "output":
             return max(1, rows - 3)
+
+        return max(1, rows)
+
+    def _get_visible_items_for_command_panel(self) -> int:
+        """返回命令面板中可见的 item 数（而非行数）。
+
+        help 每个 item 占 2 行（命令行 + 描述行），
+        completion 每 item 占 1 行，
+        output 滚动的是行而非 item。
+        """
+        rows = self.ui.command_panel_reserved_rows
+        mode = self.ui.command_panel_mode
+
+        if mode == "help":
+            usable_lines = max(1, rows - 4)  # header 行 + footer 行占用 4
+            return max(1, usable_lines // 2)
 
         if mode == "completion":
             return max(1, rows)
 
+        if mode == "output":
+            return max(1, rows - 3)
+
         return max(1, rows)
 
     def _ensure_panel_index_visible(self, selected_index: int, total_count: int) -> None:
-        visible_rows = self._get_visible_rows_for_command_panel()
+        visible_items = self._get_visible_items_for_command_panel()
         offset = self.ui.command_panel_scroll_offset
 
-        max_offset = max(0, total_count - visible_rows)
+        max_offset = max(0, total_count - visible_items)
 
         if selected_index < offset:
             offset = selected_index
-        elif selected_index >= offset + visible_rows:
-            offset = selected_index - visible_rows + 1
+        elif selected_index >= offset + visible_items:
+            offset = selected_index - visible_items + 1
 
         self.ui.command_panel_scroll_offset = max(0, min(offset, max_offset))
 
