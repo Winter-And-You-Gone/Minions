@@ -58,6 +58,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "/judge rule",
         subcommands=("rule", "local", "llm"),
     ),
+    CommandSpec(
+        "/listen",
+        "开启实时麦克风倾听 / ASR",
+        "/listen",
+        aliases=("/倾听", "/监听"),
+    ),
 )
 
 

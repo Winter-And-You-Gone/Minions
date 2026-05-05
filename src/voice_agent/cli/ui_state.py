@@ -76,7 +76,12 @@ class UIState:
     judge_provider: str = "local"
     judge_model: str = "qwen3.5:4b"
     llm_model: str = ""
-    runtime_state: str = "sleeping"
+    runtime_state: str = "text_ready"
+
+    # 三种独立状态
+    text_ready: bool = True          # 文字聊天始终可用
+    assistant_awake: bool = False    # /wakeup 叫醒后为 True
+    voice_listening: bool = False    # /listen 启动实时语音后为 True
 
     # 唤醒状态
     wake_active: bool = False

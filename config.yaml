@@ -93,6 +93,7 @@ privacy:
   local_stt_only: true
 
 runtime:
-  autostart: false
-  start_on_wakeup: true
-  stop_on_sleep: true
+  text_enabled: true
+  autostart_voice: false
+  start_voice_on_wakeup: false
+  stop_voice_on_sleep: true

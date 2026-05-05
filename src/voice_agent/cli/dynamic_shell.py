@@ -140,8 +140,8 @@ class DynamicMinionsShell:
         self.ui.add_system_message("Minions — 常驻语音 Agent")
         self.ui.add_system_message("输入 /help 查看命令，直接输入文字与 AI 对话")
 
-        # 默认 ASR 未启动提示（用户需要输入 /wakeup 启动语音监听）
-        self.ui.add_notification("语音监听已停止。输入 /wakeup 启动语音输入")
+        # 默认文字模式已可用，语音监听未启动
+        self.ui.add_notification("文字聊天已可用。输入 /listen 启动语音，/wakeup 叫醒 AI")
 
     # ------------------------------------------------------------------
     # UI 构建
@@ -591,7 +591,9 @@ class DynamicMinionsShell:
                 self.ui.add_notification(msg)
 
         elif etype == "runtime.status":
-            self.ui.runtime_state = event.get("state", "sleeping")
+            new_state = event.get("state", "text_ready")
+            self.ui.runtime_state = new_state
+            self.ui.voice_listening = (new_state == "listening")
             msg = event.get("message", "")
             if msg:
                 self.ui.add_notification(msg)
@@ -860,7 +862,13 @@ class DynamicMinionsShell:
         self._input_buffer.cursor_position = len(self._input_buffer.text)
 
     def _history_forward(self) -> None:
+        # 如果没有在浏览历史，但输入框里有内容，Down 应该清空输入框
         if not self._history_browsing:
+            if self._input_buffer.text:
+                self._input_buffer.text = ""
+                self._input_buffer.cursor_position = 0
+                self._history_draft = ""
+                self._safe_invalidate()
             return
 
         entries = self._get_history_entries()
@@ -868,10 +876,10 @@ class DynamicMinionsShell:
             self._history_index += 1
             self._input_buffer.text = entries[self._history_index]
         else:
-            # 回到原始草稿 / 空输入
+            # 回到原始草稿；如果原始草稿为空，就显示空输入
             self._history_browsing = False
             self._history_index = -1
-            self._input_buffer.text = self._history_draft
+            self._input_buffer.text = self._history_draft or ""
 
         self._input_buffer.cursor_position = len(self._input_buffer.text)
 
@@ -1024,15 +1032,18 @@ class DynamicMinionsShell:
         "/mic": ("麦克风管理", "mic"),
         "/name": ("设置或查看 AI 名字", "name"),
         "/名字": ("设置或查看 AI 名字", "name"),
-        "/wakeup": ("启动语音监听和 ASR", "wakeup"),
-        "/wake": ("启动语音监听和 ASR", "wakeup"),
-        "/起床": ("启动语音监听和 ASR", "wakeup"),
-        "/叫醒": ("启动语音监听和 ASR", "wakeup"),
-        "/sleep": ("停止语音监听，进入待机", "sleep"),
-        "/standby": ("停止语音监听，进入待机", "sleep"),
-        "/睡觉": ("停止语音监听，进入待机", "sleep"),
-        "/休息": ("停止语音监听，进入待机", "sleep"),
+        "/wakeup": ("叫醒 AI，进入连续对话状态", "wakeup"),
+        "/wake": ("叫醒 AI，进入连续对话状态", "wakeup"),
+        "/起床": ("叫醒 AI，进入连续对话状态", "wakeup"),
+        "/叫醒": ("叫醒 AI，进入连续对话状态", "wakeup"),
+        "/sleep": ("让 AI 睡眠，并停止实时监听", "sleep"),
+        "/standby": ("让 AI 睡眠，并停止实时监听", "sleep"),
+        "/睡觉": ("让 AI 睡眠，并停止实时监听", "sleep"),
+        "/休息": ("让 AI 睡眠，并停止实时监听", "sleep"),
         "/judge": ("查看或切换判断器", "judge"),
+        "/listen": ("开启实时麦克风倾听 / ASR", "listen"),
+        "/倾听": ("开启实时麦克风倾听 / ASR", "listen"),
+        "/监听": ("开启实时麦克风倾听 / ASR", "listen"),
     }
 
     async def _dispatch_command(self, raw: str) -> None:
@@ -1415,32 +1426,69 @@ class DynamicMinionsShell:
     # /wakeup /sleep /judge 命令
     # ------------------------------------------------------------------
 
-    async def _cmd_wakeup(self) -> None:
-        """启动语音监听和 ASR。"""
-        if self._runtime_controller is None:
-            self.ui.set_command_output("Wakeup", "未配置 RuntimeController，无法启动语音监听")
-            self._safe_invalidate()
-            return
+    async def _cmd_wakeup(self, *args: str) -> None:
+        """叫醒 AI，进入连续对话状态；不启动麦克风。"""
+        self.ui.assistant_awake = True
+        self.ui.runtime_state = "text_ready"
+        self.ui.conversation_mode = "active_chat"
 
-        ok = await self._runtime_controller.wakeup()
-        if ok:
-            self.ui.runtime_state = "listening"
-            self.ui.add_notification("语音监听已启动")
-        else:
-            self.ui.runtime_state = "error"
-            self.ui.add_notification("语音监听启动失败")
+        # 激活 ConversationState wake_session
+        try:
+            matcher = getattr(self._agent._gate, "wake_matcher", None)
+            assistant_name = self.ui.assistant_name or "琉璃川"
+            if matcher is not None:
+                assistant_name = getattr(matcher.config, "name", assistant_name)
+            if hasattr(self._state, "activate_wake_session"):
+                self._state.activate_wake_session(120, assistant_name)
+        except Exception as e:
+            self._logger.warning("[TUI] activate wake session failed: %s", e)
+
+        self.ui.set_command_output(
+            "Wakeup",
+            [
+                f"{self.ui.assistant_name} 已醒来。",
+                "文字聊天已可用，你可以直接输入内容。",
+                "如果需要实时语音倾听，请输入 /listen。",
+                "如果要休息，请输入 /sleep。",
+            ],
+        )
         self._safe_invalidate()
 
-    async def _cmd_sleep(self) -> None:
-        """停止语音监听，进入待机。"""
-        if self._runtime_controller is None:
-            self.ui.set_command_output("Sleep", "未配置 RuntimeController")
-            self._safe_invalidate()
-            return
+    async def _cmd_sleep(self, *args: str) -> None:
+        """让 AI 进入睡眠状态，并停止实时监听。"""
+        self.ui.assistant_awake = False
+        self.ui.conversation_mode = "passive_listening"
 
-        await self._runtime_controller.sleep()
-        self.ui.runtime_state = "sleeping"
-        self.ui.add_notification("已进入待机")
+        try:
+            if hasattr(self._state, "end_wake_session"):
+                self._state.end_wake_session()
+        except Exception:
+            pass
+
+        if self._runtime_controller is not None:
+            try:
+                if hasattr(self._runtime_controller, "stop_listening"):
+                    await self._runtime_controller.stop_listening()
+                else:
+                    await self._runtime_controller.sleep()
+            except Exception as e:
+                self._logger.exception("[TUI] sleep stop listening failed: %s", e)
+
+        self.ui.voice_listening = False
+        self.ui.runtime_state = "text_ready"
+        self.ui.asr.status = "idle"
+
+        self.ui.set_command_output(
+            "Sleep",
+            [
+                f"{self.ui.assistant_name} 已进入睡眠状态。",
+                "实时语音监听已停止。",
+                "文字输入仍然可用。",
+                "",
+                "输入 /wakeup 可以叫醒 AI。",
+                "输入 /listen 可以开启实时倾听。",
+            ],
+        )
         self._safe_invalidate()
 
     async def _cmd_judge(self, *args: str) -> None:
@@ -1483,6 +1531,55 @@ class DynamicMinionsShell:
         self.ui.judge_provider = provider
         self.ui.add_notification(f"判断器已切换为: {provider}")
         self.ui.set_command_output("Judge", f"判断器已切换为: {provider}")
+        self._safe_invalidate()
+
+    async def _cmd_listen(self, *args: str) -> None:
+        """启动实时麦克风倾听 / ASR。"""
+        if self._runtime_controller is None:
+            self.ui.set_command_output("Listen", "RuntimeController 未初始化，无法启动实时监听。")
+            self._safe_invalidate()
+            return
+
+        self.ui.set_command_output(
+            "Listen",
+            [
+                "正在启动实时语音监听...",
+                "如果首次加载 ASR 模型，可能需要等待几秒。",
+            ],
+        )
+        self._safe_invalidate()
+
+        try:
+            if hasattr(self._runtime_controller, "start_listening"):
+                ok = await self._runtime_controller.start_listening()
+            else:
+                ok = await self._runtime_controller.wakeup()
+
+            if ok:
+                self.ui.voice_listening = True
+                self.ui.runtime_state = "listening"
+                self.ui.asr.status = "listening"
+                self.ui.set_command_output(
+                    "Listen",
+                    [
+                        "实时语音监听已启动。",
+                        "现在可以直接说话。",
+                        "",
+                        "输入 /sleep 可以停止实时监听并让 AI 休息。",
+                    ],
+                )
+            else:
+                self.ui.set_command_output(
+                    "Listen",
+                    [
+                        "实时语音监听启动失败。",
+                        "请检查 ASR 模型、麦克风设备和 logs/minions.log。",
+                    ],
+                )
+        except Exception as e:
+            self._logger.exception("[TUI] listen failed: %s", e)
+            self.ui.set_command_output("Listen", f"启动实时监听失败: {e}")
+
         self._safe_invalidate()
 
     # ------------------------------------------------------------------

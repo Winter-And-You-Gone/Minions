@@ -70,7 +70,9 @@ def test_home_panel_shows_runtime_info():
     result = format_home_panel(state)
     text = "".join(t for _, t in result)
     assert "sherpa-onnx" in text
-    assert "qwen3.5" in text
+    assert "Text:" in text
+    assert "Voice:" in text
+    assert "Wake:" in text
 
 
 def test_home_panel_contains_chat_and_runtime():
@@ -84,7 +86,7 @@ def test_home_panel_contains_chat_and_runtime():
     text = "".join(part for _, part in frags)
     assert "Chat" in text
     assert "你好" in text
-    assert "qwen3.5:4b" in text
+    assert "Voice:" in text
     assert ".-=======-." in text
 
 
@@ -308,45 +310,51 @@ def test_footer_bar_shows_paused():
     assert "PAUSED" in text or "⏸" in text
 
 
-def test_footer_bar_shows_runtime_state_sleeping():
+def test_footer_bar_shows_asleep_voice_off():
     state = UIState()
-    state.runtime_state = "sleeping"
+    state.assistant_awake = False
+    state.voice_listening = False
     result = format_footer_bar(state)
     text = "".join(t for _, t in result)
-    assert "sleeping" in text or "wakeup" in text
+    assert "asleep" in text
+    assert "voice off" in text
 
 
-def test_footer_bar_shows_runtime_state_listening():
+def test_footer_bar_shows_listening():
     state = UIState()
-    state.runtime_state = "listening"
+    state.voice_listening = True
     result = format_footer_bar(state)
     text = "".join(t for _, t in result)
     assert "listening" in text
 
 
-def test_footer_bar_shows_runtime_state_error():
+def test_footer_bar_shows_awake():
     state = UIState()
-    state.runtime_state = "error"
+    state.assistant_awake = True
     result = format_footer_bar(state)
     text = "".join(t for _, t in result)
-    assert "error" in text
+    assert "awake" in text
 
 
-def test_footer_bar_shows_runtime_state_waking():
+def test_footer_bar_shows_awake_and_listening():
     state = UIState()
-    state.runtime_state = "waking"
+    state.assistant_awake = True
+    state.voice_listening = True
     result = format_footer_bar(state)
     text = "".join(t for _, t in result)
-    assert "waking" in text
+    assert "awake" in text
+    assert "listening" in text
 
 
 def test_home_panel_shows_runtime_state():
     """验证 home panel 右侧显示 Runtime 状态行。"""
     state = UIState()
-    state.runtime_state = "listening"
+    state.voice_listening = True
+    state.assistant_awake = True
     frags = format_home_panel(state)
     text = "".join(part for _, part in frags)
-    assert "Run:" in text or "listening" in text
+    assert "Voice:" in text
+    assert "Wake:" in text
 
 
 # ── LOGO ──────────────────────────────────────────────────────────────────

@@ -67,19 +67,22 @@ def _pad_to_width(text: str, width: int) -> str:
     return text + (" " * pad)
 
 
-def _wrap_display_lines(text: str, width: int, max_lines: int = 2) -> list[str]:
-    """将文本按显示宽度换行，返回最多 max_lines 行。"""
+def _wrap_display_lines(text: str, width: int) -> list[str]:
+    """将文本按显示宽度换行，不限制行数。"""
+    if width <= 0:
+        return []
+
     lines: list[str] = []
     rest = text
 
-    while rest and len(lines) < max_lines:
+    while rest:
         if _display_width(rest) <= width:
             lines.append(_pad_to_width(rest, width))
-            rest = ""
             break
 
         result: list[str] = []
         current = 0
+        cut_index = 0
         for idx, ch in enumerate(rest):
             ch_width = wcwidth(ch)
             if ch_width < 0:
@@ -90,14 +93,12 @@ def _wrap_display_lines(text: str, width: int, max_lines: int = 2) -> list[str]:
             current += ch_width
             cut_index = idx + 1
 
+        if cut_index <= 0:
+            cut_index = 1
+            result = [rest[0] if rest else ""]
+
         lines.append(_pad_to_width("".join(result), width))
         rest = rest[cut_index:]
-
-    if rest and lines:
-        # 最后一行加省略号
-        lines[-1] = _pad_to_width(
-            _trim_to_width(lines[-1].rstrip() + "…", width), width,
-        )
 
     if not lines:
         lines.append(" " * width)
@@ -106,6 +107,52 @@ def _wrap_display_lines(text: str, width: int, max_lines: int = 2) -> list[str]:
 
 
 MAX_HOME_ROWS = 18
+CHAT_VISIBLE_ROWS = 16
+
+
+def _wrap_chat_message(
+    state: UIState,
+    msg_text: str,
+    role: MessageRole,
+    left_width: int,
+) -> list[list[tuple[str, str]]]:
+    """将单条消息渲染为带前缀和颜色的行列表。
+
+    第一行有前缀（你：/ 西瓜：），后续行用空格缩进对齐。
+    返回每行是一个 (style, text) 片段列表。
+    """
+    if role == MessageRole.USER:
+        prefix = "你："
+        prefix_style = "bold cyan"
+        content_style = "white"
+    elif role == MessageRole.ASSISTANT:
+        name = state.assistant_name or "AI"
+        prefix = f"{name}："
+        prefix_style = "bold yellow"
+        content_style = "ansibrightwhite"
+    else:
+        return []
+
+    prefix_width = _display_width(prefix)
+    content_width = max(1, left_width - prefix_width)
+    content_lines = _wrap_display_lines(msg_text, content_width)
+
+    result: list[list[tuple[str, str]]] = []
+    for i, line in enumerate(content_lines):
+        row: list[tuple[str, str]] = []
+        if i == 0:
+            row.append((prefix_style, prefix))
+        else:
+            row.append(("", " " * prefix_width))
+        # line is already padded to content_width; row total = prefix_width + content_width
+        row.append((content_style, line.rstrip()))
+        # pad remaining to full left_width
+        line_dw = _display_width(line.rstrip())
+        pad = left_width - prefix_width - line_dw
+        if pad > 0:
+            row.append(("", " " * pad))
+        result.append(row)
+    return result
 
 
 def format_home_panel(state: UIState) -> list[tuple[str, str]]:
@@ -114,10 +161,12 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
         frags: list[tuple[str, str]] = []
         LEFT = _LEFT_WIDTH
 
-        # ── 左侧：Chat ──
-        left_lines: list[str] = []
-        left_lines.append("Chat")
-        left_lines.append("─" * LEFT)
+        # ── 左侧：Chat（彩色，按角色区分） ──
+        chat_rows: list[list[tuple[str, str]]] = []
+
+        # Header
+        chat_rows.append([("bold", "Chat")])
+        chat_rows.append([("ansibrightblack", "─" * LEFT)])
 
         visible_chat = [
             m for m in state.visible_messages
@@ -126,54 +175,52 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
 
         if visible_chat:
             if state.hidden_message_count > 0:
-                left_lines.append(
-                    _pad_to_width(f"… 已折叠 {state.hidden_message_count} 条更早消息", LEFT)
-                )
+                chat_rows.append([
+                    ("ansibrightblack", _pad_to_width(
+                        f"… 已折叠 {state.hidden_message_count} 条更早内容", LEFT,
+                    )),
+                ])
             for msg in visible_chat[-8:]:
                 try:
-                    if msg.role == MessageRole.USER:
-                        prefix = "你："
-                    elif msg.role == MessageRole.ASSISTANT:
-                        prefix = f"{state.assistant_name}：" if state.assistant_name else "AI："
-                    else:
-                        continue
-                    wrapped = _wrap_display_lines(prefix + msg.text, LEFT, max_lines=2)
-                    left_lines.extend(wrapped)
+                    msg_rows = _wrap_chat_message(state, msg.text, msg.role, LEFT)
+                    chat_rows.extend(msg_rows)
                 except Exception:
-                    left_lines.append(_pad_to_width("• <message error>", LEFT))
+                    chat_rows.append([("red", _pad_to_width("• <message error>", LEFT))])
         else:
-            left_lines.append("暂无对话。直接说话，或输入文字。")
-            left_lines.append("输入 /help 查看命令。")
+            chat_rows.append([("ansibrightblack", _pad_to_width("暂无对话。直接说话，或输入文字。", LEFT))])
+            chat_rows.append([("ansibrightblack", _pad_to_width("输入 /help 查看命令。", LEFT))])
             # Tips
             tips = state.tips_lines if state.tips_lines else _DEFAULT_TIPS
             for tip in tips:
-                left_lines.append(_pad_to_width(f"· {tip}", LEFT))
+                chat_rows.append([("ansibrightblack", _pad_to_width(f"· {tip}", LEFT))])
             # Health
             if state.health_items:
-                left_lines.append("")
+                chat_rows.append([("", "")])
                 for item in state.health_items:
                     try:
                         ok = getattr(item, "ok", False)
                         name = getattr(item, "name", "?")
                         level = getattr(item, "level", "info")
                         mark = "✓" if ok else ("✗" if level == "error" else "!")
-                        left_lines.append(_pad_to_width(f"  {mark} {name}", LEFT))
+                        chat_rows.append([("ansibrightblack", _pad_to_width(f"  {mark} {name}", LEFT))])
                     except Exception:
-                        left_lines.append(_pad_to_width("  ? unknown", LEFT))
+                        chat_rows.append([("ansibrightblack", _pad_to_width("  ? unknown", LEFT))])
 
         if state.error_line:
-            left_lines.append("")
-            left_lines.append(_pad_to_width(f"✗ {state.error_line}", LEFT))
+            chat_rows.append([("", "")])
+            chat_rows.append([("red", _pad_to_width(f"✗ {state.error_line}", LEFT))])
+
+        # 按行数裁剪，不截断单条消息
+        if len(chat_rows) > CHAT_VISIBLE_ROWS:
+            hidden = len(chat_rows) - CHAT_VISIBLE_ROWS
+            chat_rows = [
+                [("ansibrightblack", _pad_to_width(f"… 已折叠 {hidden} 行更早内容", LEFT))],
+            ] + chat_rows[-(CHAT_VISIBLE_ROWS - 1):]
 
         # ── 右侧：LOGO + Runtime ──
         right_rows: list[list[tuple[str, str]]] = []
 
         llm_label = state.llm_model or state.llm.model or "mock"
-        wake_text = (
-            f"active {int(state.wake_remaining_seconds)}s"
-            if state.wake_active
-            else "inactive"
-        )
 
         # LOGO
         for line in MINION_LOGO:
@@ -181,16 +228,33 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
 
         right_rows.append([])
 
-        # Runtime 信息
+        # Runtime 信息 — Text / Voice / Wake 三状态
         right_rows.append([("bold cyan", f"✦ {state.app_name}  {state.version_text or ''}")])
         right_rows.append([("bold white", f"Welcome back, {state.assistant_name}!")])
+        right_rows.append([])
+
+        # Text: always ready
+        right_rows.append([("cyan", "Text:  "), ("white", "ready")])
+
+        # Voice
+        if state.voice_listening:
+            voice_text = "listening (/sleep)"
+        else:
+            voice_text = "off (/listen)"
+        right_rows.append([("blue", "Voice: "), ("white", voice_text)])
+
+        # Wake
+        if state.assistant_awake:
+            wake_text = "awake (/sleep)"
+        else:
+            wake_text = "asleep (/wakeup)"
+        right_rows.append([("yellow", "Wake:  "), ("white", wake_text)])
+
         right_rows.append([])
         right_rows.append([("cyan", "ASR:   "), ("white", state.asr_engine)])
         right_rows.append([("magenta", "Judge: "), ("white", f"{state.judge_model} ({state.judge_provider})")])
         right_rows.append([("green", "LLM:   "), ("white", llm_label)])
         right_rows.append([("yellow", "Mode:  "), ("white", state.conversation_mode)])
-        right_rows.append([("ansibrightblack", "Run:   "), ("white", state.runtime_state)])
-        right_rows.append([("blue", "Wake:  "), ("white", wake_text)])
 
         if state.current_path:
             right_rows.append([("ansibrightblack", "Path:  "), ("white", state.current_path)])
@@ -204,12 +268,13 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
                 pass
 
         # ── 合并左右（限制总行数） ──
-        max_lines = min(MAX_HOME_ROWS, max(len(left_lines), len(right_rows)))
+        max_lines = min(MAX_HOME_ROWS, max(len(chat_rows), len(right_rows)))
 
         for i in range(max_lines):
             # 左侧
-            if i < len(left_lines):
-                frags.append(("", _pad_to_width(left_lines[i], LEFT)))
+            if i < len(chat_rows):
+                for style, text in chat_rows[i]:
+                    frags.append((style, text))
             else:
                 frags.append(("", " " * LEFT))
 
@@ -405,7 +470,7 @@ def format_output_panel(state: UIState) -> list[tuple[str, str]]:
 # ── 底部状态栏 ────────────────────────────────────────────────────────────
 
 def format_footer_bar(state: UIState) -> list[tuple[str, str]]:
-    """底部状态栏：左侧根据面板模式和运行时状态显示不同提示，右侧模型信息。"""
+    """底部状态栏：左侧 state 提示，右侧快捷键提示。"""
     try:
         mode = state.command_panel_mode
         if mode == "completion":
@@ -415,27 +480,21 @@ def format_footer_bar(state: UIState) -> list[tuple[str, str]]:
         elif mode == "output":
             left_hint = "↑↓ scroll  ·  PgUp/PgDn page  ·  Esc close"
         else:
-            # 根据运行时状态显示不同提示
-            rs = state.runtime_state
-            if rs == "sleeping":
-                left_hint = f"sleeping · /wakeup to start"
-            elif rs == "waking":
-                left_hint = "waking · starting ASR..."
-            elif rs == "listening":
-                left_hint = f"listening · {state.conversation_mode}"
-            elif rs == "stopping":
-                left_hint = "stopping ASR..."
-            elif rs == "error":
-                left_hint = "error — try /wakeup"
-            else:
-                left_hint = f"{state.conversation_mode}"
+            # 三状态提示
+            parts = ["text ready"]
+            parts.append("listening" if state.voice_listening else "voice off")
+            parts.append("awake" if state.assistant_awake else "asleep")
+            left_hint = " · ".join(parts)
 
         if state.paused:
             left_hint = "⏸  PAUSED"
         elif mode != "blank":
             left_hint = f"{state.app_name} | {left_hint}"
 
-        right = state.footer_right or f"Runtime:{state.runtime_state}"
+        if state.voice_listening or state.assistant_awake:
+            right = "/sleep /help"
+        else:
+            right = "/wakeup /listen /help"
         padding = max(0, 80 - len(left_hint) - len(right))
         line = left_hint + " " * padding + right
 

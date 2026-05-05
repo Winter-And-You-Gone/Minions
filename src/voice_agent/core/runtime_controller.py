@@ -55,7 +55,8 @@ class RuntimeController:
             "asr_engine": self._asr_engine_name,
         })
 
-    async def wakeup(self) -> bool:
+    async def start_listening(self) -> bool:
+        """启动实时语音监听。"""
         if self._state in ("waking", "listening"):
             await self._publish_status("已经处于监听状态")
             return True
@@ -71,19 +72,19 @@ class RuntimeController:
                     self._config,
                 )
 
-            # start() 可能是阻塞式长期运行的协程，用 task 包装
             self._asr_task = asyncio.create_task(self._asr_engine.start())
             self._state = "listening"
             await self._publish_status("语音监听已启动")
             return True
 
         except Exception as e:
-            self._logger.exception("[Runtime] wakeup failed: %s", e)
+            self._logger.exception("[Runtime] start_listening failed: %s", e)
             self._state = "error"
             await self._publish_status(f"启动失败: {e}")
             return False
 
-    async def sleep(self) -> None:
+    async def stop_listening(self) -> None:
+        """停止实时语音监听。"""
         if self._state == "sleeping":
             await self._publish_status("已经处于待机状态")
             return
@@ -102,7 +103,15 @@ class RuntimeController:
                 await self._asr_engine.stop()
 
         self._state = "sleeping"
-        await self._publish_status("已进入待机")
+        await self._publish_status("语音监听已停止")
+
+    async def wakeup(self) -> bool:
+        """保留兼容：委托给 start_listening。"""
+        return await self.start_listening()
+
+    async def sleep(self) -> None:
+        """保留兼容：委托给 stop_listening。"""
+        await self.stop_listening()
 
     async def close(self) -> None:
-        await self.sleep()
+        await self.stop_listening()
