@@ -2,8 +2,6 @@
 
 import argparse
 import asyncio
-import contextlib
-import os
 import signal
 import sys
 
@@ -554,42 +552,37 @@ async def run_judge_test(config_path: str, text: str) -> None:
 
 
 def _run_with_signal_guard(coro_func, *args, **kwargs):
+    import os as _os
+    import threading
+
+    _kill_timer: threading.Timer | None = [None]
+
+    def _on_sigint(signum, frame):
+        """Windows / Unix 保底退出：
+        第一次 Ctrl+C 尝试正常退出，2 秒未果强制 os._exit(0)。
+        第二次 Ctrl+C 由 SIG_DFL 直接终止进程。"""
+        import _thread
+
+        if _kill_timer[0] is not None:
+            _kill_timer[0].cancel()
+        # 恢复默认处理：第二次 Ctrl+C 直接终止
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        # 2 秒后强制退出
+        _kill_timer[0] = threading.Timer(2.0, lambda: _os._exit(0))
+        _kill_timer[0].daemon = True
+        _kill_timer[0].start()
+        # 在主线程触发 KeyboardInterrupt
+        _thread.interrupt_main()
+
+    previous = signal.signal(signal.SIGINT, _on_sigint)
     try:
-        async def _runner():
-            loop = asyncio.get_running_loop()
-            stop_event = asyncio.Event()
-
-            def _on_sigint():
-                stop_event.set()
-
-            try:
-                loop.add_signal_handler(signal.SIGINT, _on_sigint)
-            except (NotImplementedError, RuntimeError):
-                pass
-
-            main_task = asyncio.create_task(coro_func(*args, **kwargs))
-            stop_task = asyncio.create_task(stop_event.wait())
-            done, _ = await asyncio.wait(
-                [main_task, stop_task],
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-
-            try:
-                loop.remove_signal_handler(signal.SIGINT)
-            except (NotImplementedError, RuntimeError):
-                pass
-
-            if stop_task in done:
-                main_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await main_task
-                raise KeyboardInterrupt()
-
-            return main_task.result()
-
-        asyncio.run(_runner())
+        asyncio.run(coro_func(*args, **kwargs))
     except KeyboardInterrupt:
         pass
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        if _kill_timer[0] is not None:
+            _kill_timer[0].cancel()
 
 
 def main() -> None:

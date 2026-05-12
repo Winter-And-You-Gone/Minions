@@ -129,7 +129,7 @@ def _wrap_chat_message(
         name = state.assistant_name or "AI"
         prefix = f"{name}："
         prefix_style = "bold yellow"
-        content_style = "ansibrightwhite"
+        content_style = "#ffffff"
     else:
         return []
 
