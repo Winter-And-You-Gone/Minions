@@ -24,14 +24,14 @@ def _resolve_env_vars(value: Any) -> Any:
     return value
 
 
-_config_cache: dict | None = None
+_config_cache: dict[str, dict] = {}
 
 
 def get_config(config_path: str = "config.yaml") -> dict:
-    """读取并返回配置字典。结果会被缓存，环境变量已替换。"""
+    """读取并返回配置字典。结果按路径缓存，环境变量已替换。"""
     global _config_cache
-    if _config_cache is not None:
-        return _config_cache
+    if config_path in _config_cache:
+        return _config_cache[config_path]
 
     load_dotenv(".env")
 
@@ -42,12 +42,13 @@ def get_config(config_path: str = "config.yaml") -> dict:
     with open(path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
 
-    _config_cache = _resolve_env_vars(raw)
-    return _config_cache
+    resolved = _resolve_env_vars(raw)
+    _config_cache[config_path] = resolved
+    return resolved
 
 
 def save_config(config: dict, config_path: str = "config.yaml") -> None:
-    """保存配置到 YAML 文件，并清除缓存。"""
+    """保存配置到 YAML 文件，并清除对应路径的缓存。"""
     global _config_cache
 
     path = Path(config_path)
@@ -60,12 +61,11 @@ def save_config(config: dict, config_path: str = "config.yaml") -> None:
             default_flow_style=False,
         )
 
-    # 清除缓存，下次 get_config 重新读取
-    _config_cache = None
+    _config_cache.pop(config_path, None)
 
 
 def reload_config(config_path: str = "config.yaml") -> dict:
     """强制重新加载配置（绕过缓存）。"""
     global _config_cache
-    _config_cache = None
+    _config_cache.pop(config_path, None)
     return get_config(config_path)

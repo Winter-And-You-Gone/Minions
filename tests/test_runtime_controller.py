@@ -21,6 +21,11 @@ class FakeASREngine:
 
     async def start(self) -> None:
         self.started = True
+        await self.bus.publish({
+            "type": "asr.status",
+            "status": "listening",
+            "message": "语音监听已启动",
+        })
 
     async def stop(self) -> None:
         self.stopped = True
@@ -50,8 +55,12 @@ async def test_default_state_is_sleeping():
 @pytest.mark.asyncio
 async def test_wakeup_transitions_to_listening():
     ctrl = make_runtime_controller()
+    assert ctrl.state == "sleeping"
     ok = await ctrl.wakeup()
     assert ok
+    assert ctrl.state in ("starting", "listening")
+    if ctrl.state == "starting":
+        await asyncio.sleep(0)
     assert ctrl.state == "listening"
     assert ctrl.is_listening
 
@@ -73,6 +82,7 @@ async def test_wakeup_idempotent():
     ok1 = await ctrl.wakeup()
     ok2 = await ctrl.wakeup()
     assert ok1 and ok2
+    await asyncio.sleep(0)
     assert ctrl.state == "listening"
 
 
@@ -80,6 +90,7 @@ async def test_wakeup_idempotent():
 async def test_sleep_transitions_to_sleeping():
     ctrl = make_runtime_controller()
     await ctrl.wakeup()
+    await asyncio.sleep(0)
     assert ctrl.state == "listening"
     await ctrl.sleep()
     assert ctrl.state == "sleeping"
@@ -124,6 +135,7 @@ async def test_publishes_runtime_status_on_wakeup():
         asr_engine_name="mock", asr_factory=FakeASREngine,
     )
     await ctrl.wakeup()
+    await asyncio.sleep(0)
 
     status_events = [e for e in events if e.get("type") == "runtime.status"]
     assert len(status_events) >= 1

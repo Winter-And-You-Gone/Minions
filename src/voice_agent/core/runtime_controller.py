@@ -34,6 +34,7 @@ class RuntimeController:
         self._state = "sleeping"
         self._asr_task: Any | None = None
         self._logger = get_logger()
+        self._bus.subscribe(self._on_asr_status_event)
 
     @property
     def state(self) -> str:
@@ -42,6 +43,17 @@ class RuntimeController:
     @property
     def is_listening(self) -> bool:
         return self._state == "listening"
+
+    async def _on_asr_status_event(self, event: dict) -> None:
+        if event.get("type") != "asr.status":
+            return
+        status = event.get("status", "")
+        if status == "listening" and self._state == "starting":
+            self._state = "listening"
+            await self._publish_status("语音监听已启动")
+        elif status == "error" and self._state == "starting":
+            self._state = "error"
+            await self._publish_status(event.get("message", "ASR 启动失败"))
 
     @property
     def asr_engine(self) -> Any | None:
@@ -57,7 +69,7 @@ class RuntimeController:
 
     async def start_listening(self) -> bool:
         """启动实时语音监听。"""
-        if self._state in ("waking", "listening"):
+        if self._state in ("waking", "listening", "starting"):
             await self._publish_status("已经处于监听状态")
             return True
 
@@ -73,8 +85,8 @@ class RuntimeController:
                 )
 
             self._asr_task = asyncio.create_task(self._asr_engine.start())
-            self._state = "listening"
-            await self._publish_status("语音监听已启动")
+            self._state = "starting"
+            await self._publish_status("ASR 引擎初始化中...")
             return True
 
         except Exception as e:

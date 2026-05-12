@@ -98,7 +98,8 @@ class AgentCore:
 
         # 7. 单独喊名字时本地回复
         if metadata.get("wake_detected") and not metadata.get("text_without_name"):
-            reply = "我在呢，少爷～"
+            _, user_title = self._assistant_profile()
+            reply = f"我在呢，{user_title}～"
             self._state.mark_agent_replied()
             self._state.enter_cooldown()
             self._recent_context.append(f"用户: {text}")

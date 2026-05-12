@@ -54,15 +54,6 @@ class Microphone:
         blocksize = int(self.sample_rate * self.chunk_ms / 1000)
         self._queue = asyncio.Queue()
 
-        device_info = sd.query_devices(self.device, kind="input") if self.device is None else sd.query_devices(self.device)
-        actual_device = self.device
-        if actual_device is None:
-            try:
-                default_input = sd.query_devices(kind="input")
-                actual_device = default_input.get("name", None)
-            except Exception:
-                actual_device = None
-
         # 对于 device=None，sounddevice 会使用默认输入设备
         self._stream = sd.InputStream(
             samplerate=self.sample_rate,
