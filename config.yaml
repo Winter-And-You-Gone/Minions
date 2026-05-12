@@ -8,20 +8,19 @@ audio:
   chunk_ms: 100
   device: 1
 asr:
-  engine: sherpa-onnx
+  engine: sherpa-onnx-streaming
   language: zh
-  mode: offline-vad
+  mode: online
   sherpa_onnx:
     enabled: true
-    type: sense_voice
+    type: zipformer
     language: zh
-    use_itn: true
-    model_dir: ./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17
-    tokens: ./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/tokens.txt
-    model: ./models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17/model.int8.onnx
-    encoder: ''
-    decoder: ''
-    joiner: ''
+    use_itn: false
+    model_dir: ./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20
+    tokens: ./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/tokens.txt
+    encoder: ./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/encoder-epoch-99-avg-1.int8.onnx
+    decoder: ./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/decoder-epoch-99-avg-1.int8.onnx
+    joiner: ./models/sherpa-onnx-streaming-zipformer-bilingual-zh-en-2023-02-20/joiner-epoch-99-avg-1.int8.onnx
     num_threads: 2
     decoding_method: greedy_search
     provider: cpu

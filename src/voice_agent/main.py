@@ -19,6 +19,7 @@ from voice_agent.core.health_check import check_runtime_health
 from voice_agent.core.runtime_controller import RuntimeController
 from voice_agent.asr.mock_asr import MockASR
 from voice_agent.asr.sherpa_onnx_asr import SherpaOnnxASR
+from voice_agent.asr.sherpa_onnx_streaming_asr import SherpaOnnxStreamingASR
 from voice_agent.output.console_output import handle_console_output
 from voice_agent.output.websocket_server import WebSocketServer
 from voice_agent.audio.microphone import Microphone, calculate_rms
@@ -76,7 +77,7 @@ def build_llm(config: dict) -> LLMClient:
     )
 
 
-def build_asr(engine_name: str, event_bus: EventBus, config: dict) -> MockASR | SherpaOnnxASR:
+def build_asr(engine_name: str, event_bus: EventBus, config: dict) -> MockASR | SherpaOnnxASR | SherpaOnnxStreamingASR:
     if engine_name == "mock":
         return MockASR(event_bus)
     if engine_name == "sherpa-onnx":
@@ -89,6 +90,14 @@ def build_asr(engine_name: str, event_bus: EventBus, config: dict) -> MockASR | 
         if "vad" in asr_config:
             merged["vad"] = asr_config["vad"]
         return SherpaOnnxASR(event_bus, merged)
+    if engine_name == "sherpa-onnx-streaming":
+        asr_section = config.get("asr", {})
+        asr_config = asr_section.get("sherpa_onnx", {})
+        audio_config = config.get("audio", {})
+        merged = {**audio_config, **asr_config}
+        if "vad" in asr_config:
+            merged["vad"] = asr_config["vad"]
+        return SherpaOnnxStreamingASR(event_bus, merged)
     raise ValueError(f"不支持的 ASR 引擎: {engine_name}")
 
 

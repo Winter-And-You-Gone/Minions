@@ -50,7 +50,6 @@ def _check_asr(report: HealthReport, config: dict) -> None:
 
     sherpa = asr.get("sherpa_onnx", {})
     model_path = sherpa.get("model", "")
-    tokens_path = sherpa.get("tokens", "")
 
     if model_path:
         exists = Path(model_path).exists()
@@ -61,12 +60,27 @@ def _check_asr(report: HealthReport, config: dict) -> None:
             level="error" if not exists else "info",
         ))
     else:
-        report.items.append(HealthItem(
-            name="ASR model",
-            ok=False,
-            message="未配置 model 路径",
-            level="error",
-        ))
+        # 流式 transducer 模型（encoder/decoder/joiner 三件套）
+        encoder = sherpa.get("encoder", "")
+        if encoder:
+            for key in ("encoder", "decoder", "joiner"):
+                path = sherpa.get(key, "")
+                exists = Path(path).exists() if path else False
+                report.items.append(HealthItem(
+                    name=f"ASR {key}",
+                    ok=exists,
+                    message=f"{'已找到' if exists else '文件不存在'}: {path}",
+                    level="error" if not exists else "info",
+                ))
+        else:
+            report.items.append(HealthItem(
+                name="ASR model",
+                ok=False,
+                message="未配置 model 路径",
+                level="error",
+            ))
+
+    tokens_path = sherpa.get("tokens", "")
 
     if tokens_path:
         exists = Path(tokens_path).exists()

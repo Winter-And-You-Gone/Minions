@@ -5,7 +5,7 @@ from voice_agent.config import reload_config
 
 def test_default_config_uses_sherpa():
     config = reload_config("config.yaml")
-    assert config["asr"]["engine"] == "sherpa-onnx"
+    assert config["asr"]["engine"] == "sherpa-onnx-streaming"
     assert config["asr"]["sherpa_onnx"]["enabled"] is True
 
 
