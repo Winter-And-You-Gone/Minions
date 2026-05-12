@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+import contextlib
+import os
 import signal
 import sys
 
@@ -551,6 +553,45 @@ async def run_judge_test(config_path: str, text: str) -> None:
         await local_judge.close()
 
 
+def _run_with_signal_guard(coro_func, *args, **kwargs):
+    try:
+        async def _runner():
+            loop = asyncio.get_running_loop()
+            stop_event = asyncio.Event()
+
+            def _on_sigint():
+                stop_event.set()
+
+            try:
+                loop.add_signal_handler(signal.SIGINT, _on_sigint)
+            except (NotImplementedError, RuntimeError):
+                pass
+
+            main_task = asyncio.create_task(coro_func(*args, **kwargs))
+            stop_task = asyncio.create_task(stop_event.wait())
+            done, _ = await asyncio.wait(
+                [main_task, stop_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            try:
+                loop.remove_signal_handler(signal.SIGINT)
+            except (NotImplementedError, RuntimeError):
+                pass
+
+            if stop_task in done:
+                main_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await main_task
+                raise KeyboardInterrupt()
+
+            return main_task.result()
+
+        asyncio.run(_runner())
+    except KeyboardInterrupt:
+        pass
+
+
 def main() -> None:
     # Windows 控制台 UTF-8 支持
     if sys.platform == "win32":
@@ -615,11 +656,11 @@ def main() -> None:
         elif args.judge_test:
             asyncio.run(run_judge_test(args.config, args.judge_test))
         elif args.cli:
-            asyncio.run(run_tui(args.config, args.asr, args.vad_threshold, not args.no_completion))
+            _run_with_signal_guard(run_tui, args.config, args.asr, args.vad_threshold, not args.no_completion)
         elif args.headless:
-            asyncio.run(run(args.config, args.asr, args.vad_threshold))
+            _run_with_signal_guard(run, args.config, args.asr, args.vad_threshold)
         else:
-            asyncio.run(run_tui(args.config, args.asr, args.vad_threshold, not args.no_completion))
+            _run_with_signal_guard(run_tui, args.config, args.asr, args.vad_threshold, not args.no_completion)
     except KeyboardInterrupt:
         pass
     except FileNotFoundError as e:

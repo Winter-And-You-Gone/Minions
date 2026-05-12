@@ -1556,18 +1556,28 @@ class DynamicMinionsShell:
                 ok = await self._runtime_controller.wakeup()
 
             if ok:
-                self.ui.voice_listening = True
-                self.ui.runtime_state = "listening"
-                self.ui.asr.status = "listening"
-                self.ui.set_command_output(
-                    "Listen",
-                    [
-                        "实时语音监听已启动。",
-                        "现在可以直接说话。",
-                        "",
-                        "输入 /sleep 可以停止实时监听并让 AI 休息。",
-                    ],
-                )
+                self.ui.voice_listening = self._runtime_controller.is_listening
+                self.ui.runtime_state = self._runtime_controller.state
+                if self._runtime_controller.is_listening:
+                    self.ui.asr.status = "listening"
+                    self.ui.set_command_output(
+                        "Listen",
+                        [
+                            "实时语音监听已启动。",
+                            "现在可以直接说话。",
+                            "",
+                            "输入 /sleep 可以停止实时监听并让 AI 休息。",
+                        ],
+                    )
+                else:
+                    self.ui.set_command_output(
+                        "Listen",
+                        [
+                            "实时语音监听启动失败。",
+                            f"当前状态: {self._runtime_controller.state}",
+                            "请检查 ASR 模型、麦克风设备和 logs/minions.log。",
+                        ],
+                    )
             else:
                 self.ui.set_command_output(
                     "Listen",

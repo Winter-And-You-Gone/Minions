@@ -42,109 +42,115 @@ class SherpaOnnxASR:
         self._result_config = config.get("result", {})
 
     async def start(self) -> None:
-        # 1) 检查依赖安装
         try:
-            import sherpa_onnx  # noqa: F401
-        except ImportError:
-            msg = (
-                "sherpa-onnx 未安装，请运行:\n"
-                "  pip install -e \".[asr]\"\n"
-                "或:\n"
-                "  pip install sherpa-onnx"
+            # 1) 检查依赖安装
+            try:
+                import sherpa_onnx  # noqa: F401
+            except ImportError:
+                msg = (
+                    "sherpa-onnx 未安装，请运行:\n"
+                    "  pip install -e \".[asr]\"\n"
+                    "或:\n"
+                    "  pip install sherpa-onnx"
+                )
+                self._logger.error("[SherpaOnnxASR] %s", msg)
+                print(f"  [ASR] 错误: {msg}", flush=True)
+                raise RuntimeError("sherpa-onnx 未安装")
+
+            # 2) 校验配置
+            self._validate_config()
+            sample_rate = self._config.get("sample_rate", 16000)
+            chunk_ms = self._config.get("chunk_ms", 100)
+
+            # 3) 创建 recognizer
+            await self._bus.publish({
+                "type": "asr.status",
+                "status": "loading_model",
+                "message": "正在加载 sherpa-onnx 模型...",
+            })
+            self._recognizer = self._create_recognizer()
+            await self._bus.publish({
+                "type": "asr.status",
+                "status": "model_loaded",
+                "message": "语音识别模型加载完成",
+            })
+
+            # 4) 创建麦克风
+            await self._bus.publish({
+                "type": "asr.status",
+                "status": "starting_microphone",
+                "message": "正在启动麦克风...",
+            })
+            self._mic = Microphone(
+                sample_rate=sample_rate,
+                channels=self._config.get("channels", 1),
+                chunk_ms=chunk_ms,
+                device=self._config.get("device"),
             )
-            self._logger.error("[SherpaOnnxASR] %s", msg)
-            print(f"  [ASR] 错误: {msg}", flush=True)
-            raise RuntimeError("sherpa-onnx 未安装")
 
-        # 2) 校验配置
-        self._validate_config()
-        sample_rate = self._config.get("sample_rate", 16000)
-        chunk_ms = self._config.get("chunk_ms", 100)
+            # 5) 创建分段器
+            vad_cfg = self._config.get("vad", {})
+            segmenter_cfg = VADSegmenterConfig(
+                sample_rate=sample_rate,
+                chunk_ms=chunk_ms,
+                rms_threshold=vad_cfg.get("rms_threshold", 0.008),
+                min_speech_ms=vad_cfg.get("min_speech_ms", 300),
+                max_speech_ms=vad_cfg.get("max_speech_ms", 15000),
+                silence_timeout_ms=vad_cfg.get("silence_timeout_ms", 800),
+                pre_roll_ms=vad_cfg.get("pre_roll_ms", 300),
+            )
+            self._segmenter = SpeechSegmenter(segmenter_cfg)
 
-        # 3) 创建 recognizer
-        await self._bus.publish({
-            "type": "asr.status",
-            "status": "loading_model",
-            "message": "正在加载 sherpa-onnx 模型...",
-        })
-        self._recognizer = self._create_recognizer()
-        await self._bus.publish({
-            "type": "asr.status",
-            "status": "model_loaded",
-            "message": "语音识别模型加载完成",
-        })
+            self._logger.info(
+                "[SherpaOnnxASR] VAD 参数: threshold=%.4f min=%dms silence=%dms max=%dms pre_roll=%dms",
+                segmenter_cfg.rms_threshold,
+                segmenter_cfg.min_speech_ms,
+                segmenter_cfg.silence_timeout_ms,
+                segmenter_cfg.max_speech_ms,
+                segmenter_cfg.pre_roll_ms,
+            )
+            await self._bus.publish({
+                "type": "asr.status",
+                "status": "vad_config",
+                "message": (
+                    f"VAD: threshold={segmenter_cfg.rms_threshold:.4f}, "
+                    f"min={segmenter_cfg.min_speech_ms}ms, "
+                    f"silence={segmenter_cfg.silence_timeout_ms}ms"
+                ),
+            })
 
-        # 4) 创建麦克风
-        await self._bus.publish({
-            "type": "asr.status",
-            "status": "starting_microphone",
-            "message": "正在启动麦克风...",
-        })
-        self._mic = Microphone(
-            sample_rate=sample_rate,
-            channels=self._config.get("channels", 1),
-            chunk_ms=chunk_ms,
-            device=self._config.get("device"),
-        )
+            # 6) 启动主循环
+            self._running = True
+            await self._bus.publish({
+                "type": "asr.status",
+                "status": "listening",
+                "message": "正在监听麦克风，请说话",
+            })
+            self._logger.info("[SherpaOnnxASR] 启动成功，等待语音输入...")
 
-        # 5) 创建分段器
-        vad_cfg = self._config.get("vad", {})
-        segmenter_cfg = VADSegmenterConfig(
-            sample_rate=sample_rate,
-            chunk_ms=chunk_ms,
-            rms_threshold=vad_cfg.get("rms_threshold", 0.008),
-            min_speech_ms=vad_cfg.get("min_speech_ms", 300),
-            max_speech_ms=vad_cfg.get("max_speech_ms", 15000),
-            silence_timeout_ms=vad_cfg.get("silence_timeout_ms", 800),
-            pre_roll_ms=vad_cfg.get("pre_roll_ms", 300),
-        )
-        self._segmenter = SpeechSegmenter(segmenter_cfg)
-
-        self._logger.info(
-            "[SherpaOnnxASR] VAD 参数: threshold=%.4f min=%dms silence=%dms max=%dms pre_roll=%dms",
-            segmenter_cfg.rms_threshold,
-            segmenter_cfg.min_speech_ms,
-            segmenter_cfg.silence_timeout_ms,
-            segmenter_cfg.max_speech_ms,
-            segmenter_cfg.pre_roll_ms,
-        )
-        await self._bus.publish({
-            "type": "asr.status",
-            "status": "vad_config",
-            "message": (
-                f"VAD: threshold={segmenter_cfg.rms_threshold:.4f}, "
-                f"min={segmenter_cfg.min_speech_ms}ms, "
-                f"silence={segmenter_cfg.silence_timeout_ms}ms"
-            ),
-        })
-
-        # 6) 启动主循环
-        self._running = True
-        await self._bus.publish({
-            "type": "asr.status",
-            "status": "listening",
-            "message": "正在监听麦克风，请说话",
-        })
-        self._logger.info("[SherpaOnnxASR] 启动成功，等待语音输入...")
-
-        try:
-            await self._mic.start()
-            await self._run_loop(sample_rate)
-        except asyncio.CancelledError:
-            self._logger.info("[SherpaOnnxASR] 被取消")
-        except Exception as e:
-            self._logger.error("[SherpaOnnxASR] 运行错误: %s", e)
-            print(f"  [ASR] 运行错误: {e}", flush=True)
+            try:
+                await self._mic.start()
+                await self._run_loop(sample_rate)
+            except asyncio.CancelledError:
+                self._logger.info("[SherpaOnnxASR] 被取消")
+            except Exception as e:
+                self._logger.error("[SherpaOnnxASR] 运行错误: %s", e)
+                print(f"  [ASR] 运行错误: {e}", flush=True)
         finally:
-            await self._mic.stop()
-            self._running = False
-            self._logger.info("[SherpaOnnxASR] 已退出")
+            await self._cleanup()
 
     async def stop(self) -> None:
         self._running = False
-        if self._mic:
-            await self._mic.stop()
+        await self._cleanup()
         self._logger.info("[SherpaOnnxASR] 已停止")
+
+    async def _cleanup(self) -> None:
+        self._running = False
+        if self._mic is not None:
+            try:
+                await self._mic.stop()
+            except Exception as e:
+                self._logger.warning("[SherpaOnnxASR] mic 清理异常: %s", e)
 
     # ---- 内部实现 ----
 
