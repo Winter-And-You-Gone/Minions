@@ -193,11 +193,9 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
             tips = state.tips_lines if state.tips_lines else _DEFAULT_TIPS
             for tip in tips:
                 chat_rows.append([("ansibrightblack", _pad_to_width(f"· {tip}", LEFT))])
-            # Health — 空出 logo 高度的行数，避免与右侧 logo 底部重叠
+            # Health
             if state.health_items:
-                # logo 占 9 行 + 2 行 padding = 右侧 row 2-10，左侧应有同等高度空白
-                for _ in range(len(MINION_LOGO) + 3):
-                    chat_rows.append([("", "")])
+                chat_rows.append([("", "")])
                 for item in state.health_items:
                     try:
                         ok = getattr(item, "ok", False)
