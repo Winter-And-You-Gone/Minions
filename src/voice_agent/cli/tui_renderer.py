@@ -106,7 +106,7 @@ def _wrap_display_lines(text: str, width: int) -> list[str]:
     return lines
 
 
-MAX_HOME_ROWS = 18
+MAX_HOME_ROWS = 20
 CHAT_VISIBLE_ROWS = 16
 
 
@@ -222,7 +222,9 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
 
         llm_label = state.llm_model or state.llm.model or "mock"
 
-        # LOGO
+        # LOGO — 顶部空 2 行与左侧 Chat 内容区对齐
+        right_rows.append([])
+        right_rows.append([])
         for line in MINION_LOGO:
             right_rows.append([("yellow", line)])
 
