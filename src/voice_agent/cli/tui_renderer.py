@@ -106,8 +106,8 @@ def _wrap_display_lines(text: str, width: int) -> list[str]:
     return lines
 
 
-MAX_HOME_ROWS = 25
-CHAT_VISIBLE_ROWS = 22
+MAX_HOME_ROWS = 20
+CHAT_VISIBLE_ROWS = 16
 
 
 def _wrap_chat_message(
@@ -193,19 +193,6 @@ def format_home_panel(state: UIState) -> list[tuple[str, str]]:
             tips = state.tips_lines if state.tips_lines else _DEFAULT_TIPS
             for tip in tips:
                 chat_rows.append([("ansibrightblack", _pad_to_width(f"· {tip}", LEFT))])
-            # Health
-            if state.health_items:
-                chat_rows.append([("", "")])
-                for item in state.health_items:
-                    try:
-                        ok = getattr(item, "ok", False)
-                        name = getattr(item, "name", "?")
-                        level = getattr(item, "level", "info")
-                        mark = "✓" if ok else ("✗" if level == "error" else "!")
-                        chat_rows.append([("ansibrightblack", _pad_to_width(f"  {mark} {name}", LEFT))])
-                    except Exception:
-                        chat_rows.append([("ansibrightblack", _pad_to_width("  ? unknown", LEFT))])
-
         if state.error_line:
             chat_rows.append([("", "")])
             chat_rows.append([("red", _pad_to_width(f"✗ {state.error_line}", LEFT))])
